@@ -1,0 +1,214 @@
+# Overview
+CollabWrite is a real-time collaborative writing platform that enables multiple users to edit documents simultaneously. It solves the problem of remote collaboration by providing a seamless, real-time editing experience with conflict resolution and user presence indicators. The platform is designed for remote teams, students, and writers who need to collaborate on documents in real-time.
+
+# Core Features
+
+## 1. Real-Time Collaborative Editing
+- **What it does**: Allows multiple users to edit the same document simultaneously with real-time updates
+- **Why it's important**: Enables seamless collaboration without conflicts or data loss
+- **How it works**:
+  - Uses CRDT (Conflict-free Replicated Data Types) for conflict resolution
+  - WebSocket connection for real-time updates
+  - Character-level synchronization
+  - Automatic conflict resolution
+
+## 2. User Authentication
+- **What it does**: Secure user registration and login system
+- **Why it's important**: Ensures document security and user accountability
+- **How it works**:
+  - JWT-based authentication
+  - Secure password hashing
+  - Session management
+  - Protected routes and endpoints
+
+## 3. Document Management
+- **What it does**: Create, view, and manage documents
+- **Why it's important**: Provides basic document organization and access control
+- **How it works**:
+  - CRUD operations for documents
+  - Document listing and filtering
+  - Basic document metadata (title, creation date, last modified)
+  - User-specific document access
+
+## 4. User Presence
+- **What it does**: Shows active users and their cursor positions
+- **Why it's important**: Enhances collaboration awareness
+- **How it works**:
+  - Real-time user presence tracking
+  - Cursor position synchronization
+  - User color coding
+  - Active user list
+
+# User Experience
+
+## User Personas
+1. **Remote Team Member**
+   - Needs to collaborate on documents with team members
+   - Requires real-time updates and conflict resolution
+   - Values user presence indicators
+
+2. **Student**
+   - Works on group assignments
+   - Needs simple document sharing
+   - Values real-time collaboration
+
+3. **Writer/Editor**
+   - Collaborates on content creation
+   - Needs version history
+   - Values conflict-free editing
+
+## Key User Flows
+1. **Document Creation and Sharing**
+   - User creates new document
+   - Shares document with collaborators
+   - Collaborators receive access
+
+2. **Real-time Editing**
+   - Multiple users edit simultaneously
+   - Changes appear in real-time
+   - Cursor positions are synchronized
+
+3. **User Management**
+   - User registration
+   - Login/Logout
+   - Session management
+
+# Technical Architecture
+
+## System Components
+1. **Backend**
+   - FastAPI server
+   - WebSocket handler
+   - CRDT implementation
+   - Authentication service
+   - Document service
+
+2. **Frontend**
+   - Simple HTML/CSS/JavaScript
+   - Monaco Editor integration
+   - WebSocket client
+   - Basic UI components
+
+## Data Models
+1. **User**
+   - id: UUID
+   - username: String
+   - email: String
+   - password_hash: String
+
+2. **Document**
+   - id: UUID
+   - title: String
+   - content: CRDT structure
+   - created_at: DateTime
+   - updated_at: DateTime
+   - owner_id: UUID
+
+3. **DocumentAccess**
+   - document_id: UUID
+   - user_id: UUID
+   - access_level: Enum
+
+## APIs and Integrations
+1. **REST APIs**
+   - /auth (login, register)
+   - /documents (CRUD operations)
+   - /users (user management)
+
+2. **WebSocket APIs**
+   - /ws/documents/{doc_id} (real-time updates)
+   - /ws/presence (user presence)
+
+# Development Roadmap
+
+## Phase 1: Foundation
+- Basic project setup
+- User authentication
+- Document CRUD operations
+- Simple frontend UI
+
+## Phase 2: Real-time Features
+- WebSocket implementation
+- CRDT integration
+- Real-time updates
+- Basic user presence
+
+## Phase 3: Collaboration
+- Cursor tracking
+- User presence indicators
+- Conflict resolution
+- Basic error handling
+
+## Phase 4: Polish
+- UI improvements
+- Error handling
+- Performance optimization
+- Basic testing
+
+# Logical Dependency Chain
+1. User Authentication (Foundation)
+   - Required for all other features
+   - Enables user identification
+   - Provides security layer
+
+2. Document Management (Core)
+   - Builds on authentication
+   - Enables document creation
+   - Provides basic functionality
+
+3. Real-time Collaboration (Advanced)
+   - Builds on document management
+   - Implements CRDT
+   - Enables real-time updates
+
+4. User Presence (Enhancement)
+   - Builds on real-time collaboration
+   - Adds user awareness
+   - Improves collaboration experience
+
+# Risks and Mitigations
+
+## Technical Challenges
+1. **Real-time Synchronization**
+   - Risk: Complex conflict resolution
+   - Mitigation: Use CRDT for simpler implementation
+
+2. **Performance**
+   - Risk: Slow updates with many users
+   - Mitigation: Optimize WebSocket communication
+
+3. **Scalability**
+   - Risk: System overload with many concurrent users
+   - Mitigation: Implement proper connection management
+
+## Resource Constraints
+1. **Development Time**
+   - Risk: Feature scope too large
+   - Mitigation: Focus on MVP features first
+
+2. **Technical Complexity**
+   - Risk: Over-engineering
+   - Mitigation: Keep implementation simple
+
+# Appendix
+
+## Technical Specifications
+1. **Backend**
+   - Python 3.8+
+   - FastAPI
+   - WebSockets
+   - PostgreSQL
+   - JWT authentication
+
+2. **Frontend**
+   - HTML5
+   - CSS3
+   - JavaScript
+   - Monaco Editor
+   - WebSocket client
+
+3. **Development Tools**
+   - Git for version control
+   - Docker for containerization
+   - pytest for testing
+   - Black for code formatting 
