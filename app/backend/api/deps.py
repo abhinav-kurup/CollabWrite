@@ -8,6 +8,7 @@ from app.backend.core.security import verify_password
 from app.backend.db.session import SessionLocal
 from app.backend.models.user import User
 from app.backend.schemas.user import TokenData
+from fastapi import WebSocket
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
@@ -54,4 +55,50 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
         return None
     if not verify_password(password, user.hashed_password):
         return None
-    return user 
+    return user
+
+async def get_current_user_ws(websocket: WebSocket) -> User:
+    """
+    Get current user from WebSocket connection using token from query parameters.
+    """
+    try:
+        # Get token from query parameters
+        token = websocket.query_params.get("token")
+        if not token:
+            print("No token provided")
+            await websocket.close(code=4001, reason="No token provided")
+            return None
+            
+        # Verify token and get user
+        try:
+            payload = jwt.decode(
+                token,
+                settings.SECRET_KEY,
+                algorithms=[settings.ALGORITHM]
+            )
+            username: str = payload.get("sub")
+            if username is None:
+                print("Invalid token: no username in payload")
+                await websocket.close(code=4002, reason="Invalid token")
+                return None
+                
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.username == username).first()
+                if user is None:
+                    print(f"User not found: {username}")
+                    await websocket.close(code=4002, reason="User not found")
+                    return None
+                return user
+            finally:
+                db.close()
+                
+        except jwt.JWTError as e:
+            print(f"JWT Error: {str(e)}")
+            await websocket.close(code=4002, reason="Invalid token")
+            return None
+            
+    except Exception as e:
+        print(f"WebSocket auth error: {str(e)}")
+        await websocket.close(code=4000, reason=str(e))
+        return None 

@@ -1,33 +1,32 @@
-from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON
 from sqlalchemy.orm import relationship
-from app.backend.db.base_class import Base
+from sqlalchemy.sql import func
+from app.backend.db.session import Base
 
 class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
-    title = Column(String(255), nullable=False)
-    content = Column(Text, nullable=True)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    version = Column(Integer, default=1, nullable=False)
-    is_public = Column(Boolean, default=False, nullable=False)
-    is_deleted = Column(Boolean, default=False, nullable=False)
+    title = Column(String, index=True)
+    content = Column(JSON)  # Store CRDT data as JSON
+    owner_id = Column(Integer, ForeignKey("users.id"))
+    version = Column(Integer, default=1)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    is_deleted = Column(Boolean, default=False)
+    is_public = Column(Boolean, default=False)
 
     # Relationships
     owner = relationship("User", back_populates="documents")
-    collaborators = relationship(
-        "User",
-        secondary="document_collaborators",
-        back_populates="shared_documents"
-    )
+    collaborators = relationship("DocumentCollaborator", back_populates="document", cascade="all, delete-orphan")
 
 class DocumentCollaborator(Base):
     __tablename__ = "document_collaborators"
 
-    document_id = Column(Integer, ForeignKey("documents.id"), primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
-    can_edit = Column(Boolean, default=True, nullable=False)
-    added_at = Column(DateTime, default=datetime.utcnow, nullable=False) 
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    # Relationships
+    document = relationship("Document", back_populates="collaborators")
+    user = relationship("User", back_populates="collaborations") 

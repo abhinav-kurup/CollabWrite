@@ -1,0 +1,3 @@
+"""
+CollabWrite application package
+""" 
