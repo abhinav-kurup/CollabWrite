@@ -124,6 +124,7 @@ def update_document(
     """
     Update document.
     """
+    print(f"Updating document {document_id}")
     document = db.query(Document).filter(Document.id == document_id).first()
     if not document:
         raise HTTPException(
@@ -137,6 +138,21 @@ def update_document(
         )
     
     update_data = document_in.model_dump(exclude_unset=True)
+    print(f"Update data: {update_data}")
+    
+    # Handle content update
+    if 'content' in update_data:
+        content = update_data['content']
+        print(f"Content update: {content}")
+        if isinstance(content, dict):
+            # Always preserve the characters array from the update
+            update_data['content'] = {
+                'text': content.get('text', ''),
+                'characters': content.get('characters', []),
+                'version': content.get('version', document.version)
+            }
+            print(f"Updated content structure: {update_data['content']}")
+    
     for field, value in update_data.items():
         setattr(document, field, value)
     
@@ -144,6 +160,7 @@ def update_document(
     db.add(document)
     db.commit()
     db.refresh(document)
+    print(f"Updated document: {document.content}")
     return document
 
 @router.delete("/{document_id}", response_model=DocumentSchema)
@@ -234,6 +251,11 @@ def add_collaborator(
     """
     Add a collaborator to the document.
     """
+    if current_user.id == user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Owner can not be collaborator"
+        )
     document = db.query(Document).filter(Document.id == document_id).first()
     if not document:
         raise HTTPException(
@@ -252,11 +274,6 @@ def add_collaborator(
         raise HTTPException(
             status_code=404,
             detail="User not found"
-        )
-    if current_user.id == user.id:
-        raise HTTPException(
-            status_code=404,
-            detail="Owner can not be collaborator"
         )
     
     # Check if already a collaborator

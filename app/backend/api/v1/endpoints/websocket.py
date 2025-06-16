@@ -280,23 +280,28 @@ async def websocket_endpoint(
                 await websocket.close(code=4003, reason="Access denied: You don't have permission to access this document")
                 return
     except JWTError:
-        print("jwr")
         await websocket.close(code=4002, reason="Invalid token: Authentication failed")
         return
     except AuthenticationError:
-        print("auth")
         await websocket.close(code=4002, reason="token not found")
         return
     except Exception as e:
-        print("gen")
         await websocket.close(code=4000, reason=f"Server error: {str(e)}")
         return
     
     # Initialize CRDT instance with user's site_id
     crdt = CRDT(site_id=str(current_user.id))
-    print("teset    ")
-    if document.content:
-        crdt.from_dict(document.content, site_id=str(current_user.id))
+    if document.content and isinstance(document.content, dict):
+        if 'characters' in document.content:
+            crdt.from_dict(document.content, site_id=str(current_user.id))
+        else:
+            # If content is just text, initialize CRDT with the text
+            text = document.content.get('text', '')
+            for i, char in enumerate(text):
+                crdt.insert(i, char)
+    else:
+        # If no content or invalid format, start with empty document
+        crdt = CRDT(site_id=str(current_user.id))
     
     # Connect to WebSocket
     await manager.connect(websocket, document_id, current_user.id, crdt)
@@ -325,7 +330,6 @@ async def websocket_endpoint(
             except WebSocketDisconnect:
                 break
             except Exception as e:
-                print(f"Error handling message: {str(e)}")
                 continue
     finally:
         # Clean up
