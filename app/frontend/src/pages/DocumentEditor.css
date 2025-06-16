@@ -1,0 +1,79 @@
+.editor-container {
+  position: relative;
+  height: 100%;
+  min-height: 500px;
+  border-radius: 4px;
+  background-color: #fff;
+}
+
+.editor-input {
+  min-height: 500px;
+  padding: 15px;
+  position: relative;
+  tab-size: 1;
+  outline: 0;
+  caret-color: #444;
+  font-size: 16px;
+  line-height: 1.5;
+  word-wrap: break-word;
+}
+
+.editor-placeholder {
+  color: #999;
+  overflow: hidden;
+  position: absolute;
+  text-overflow: ellipsis;
+  top: 15px;
+  left: 15px;
+  font-size: 16px;
+  user-select: none;
+  display: inline-block;
+  pointer-events: none;
+}
+
+.editor-paragraph {
+  margin: 0;
+  margin-bottom: 8px;
+  position: relative;
+}
+
+.editor-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.editor-text-bold {
+  font-weight: bold;
+}
+
+.editor-text-italic {
+  font-style: italic;
+}
+
+.editor-text-underline {
+  text-decoration: underline;
+}
+
+.editor-error-boundary {
+  border: 1px solid #ff0000;
+  padding: 8px;
+  margin: 8px;
+  border-radius: 4px;
+  background-color: #fff;
+  color: #ff0000;
+}
+
+/* Cursor styles for collaboration */
+.collaborator-cursor {
+  position: absolute;
+  width: 2px;
+  height: 18px;
+  background-color: #000;
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0% { opacity: 1; }
+  50% { opacity: 0; }
+  100% { opacity: 1; }
+} 
