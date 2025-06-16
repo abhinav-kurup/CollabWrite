@@ -12,6 +12,7 @@ interface Document {
   content: any;
   owner_id: number;
   collaborators: number[];
+  version: string;
 }
 
 const DocumentEditor: React.FC = () => {
@@ -141,7 +142,10 @@ const DocumentEditor: React.FC = () => {
     const saveInterval = setInterval(async () => {
       try {
         await documentService.updateDocument(document.id, {
-          content: editor.getValue(),
+          content: {
+            text: editor.getValue(),
+            version: document.version
+          },
         });
       } catch (err) {
         console.error('Error saving document:', err);

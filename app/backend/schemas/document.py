@@ -38,6 +38,12 @@ class Document(DocumentInDBBase):
 class DocumentInDB(DocumentInDBBase):
     pass
 
+# Collaborator response
+class CollaboratorResponse(BaseModel):
+    user_id: int
+    username: str
+    email: str
+
 # Document with collaborators
 class DocumentWithCollaborators(Document):
-    collaborators: List[int] = []  # List of user IDs 
+    collaborators: List[CollaboratorResponse] = [] 

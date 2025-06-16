@@ -8,7 +8,8 @@ from app.backend.schemas.document import (
     Document as DocumentSchema,
     DocumentCreate,
     DocumentUpdate,
-    DocumentWithCollaborators
+    DocumentWithCollaborators,
+    CollaboratorResponse
 )
 
 router = APIRouter()
@@ -78,7 +79,6 @@ def read_document(
             status_code=404,
             detail="Document not found"
         )
-    
     # Check if user has access to the document
     is_collaborator = db.query(DocumentCollaborator).filter(
         DocumentCollaborator.document_id == document_id,
@@ -94,12 +94,10 @@ def read_document(
             status_code=403,
             detail="Not enough permissions"
         )
-    
     # Get collaborator IDs
     collaborator_ids = [
-        c.id for c in document.collaborators
+        c.user_id for c in document.collaborators
     ]
-    
     # Create response with collaborators
     document_dict = {
         "id": document.id,
@@ -113,7 +111,6 @@ def read_document(
         "is_public": document.is_public,
         "collaborators": collaborator_ids
     }
-    
     return DocumentWithCollaborators(**document_dict)
 
 @router.put("/{document_id}", response_model=DocumentSchema)
@@ -177,14 +174,63 @@ def delete_document(
     db.refresh(document)
     return document
 
-@router.post("/{document_id}/collaborators/{user_id}", response_model=DocumentWithCollaborators)
+@router.get("/{document_id}/collaborators", response_model=List[CollaboratorResponse])
+def get_document_collaborators(
+    *,
+    db: Session = Depends(get_db),
+    document_id: int,
+    current_user: User = Depends(get_current_user)
+) -> List[CollaboratorResponse]:
+    """
+    Get all collaborators for a document.
+    """
+    document = db.query(Document).filter(Document.id == document_id, Document.is_deleted == False).first()
+    if not document:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found"
+        )
+    
+    # Check if user has access to the document
+    is_collaborator = db.query(DocumentCollaborator).filter(
+        DocumentCollaborator.document_id == document_id,
+        DocumentCollaborator.user_id == current_user.id
+    ).first() is not None
+    
+    if (
+        document.owner_id != current_user.id and
+        not document.is_public and
+        not is_collaborator
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Not enough permissions"
+        )
+    
+    # Get collaborators with user details
+    collaborators = (
+        db.query(User)
+        .join(DocumentCollaborator, User.id == DocumentCollaborator.user_id)
+        .filter(DocumentCollaborator.document_id == document_id)
+        .all()
+    )
+    
+    return [
+        CollaboratorResponse(
+            user_id=c.id,
+            username=c.username,
+            email=c.email
+        ) for c in collaborators
+    ]
+
+@router.post("/{document_id}/collaborators/{user_id}", response_model=List[CollaboratorResponse])
 def add_collaborator(
     *,
     db: Session = Depends(get_db),
     document_id: int,
     user_id: int,
     current_user: User = Depends(get_current_user)
-) -> Document:
+) -> List[CollaboratorResponse]:
     """
     Add a collaborator to the document.
     """
@@ -206,6 +252,11 @@ def add_collaborator(
         raise HTTPException(
             status_code=404,
             detail="User not found"
+        )
+    if current_user.id == user.id:
+        raise HTTPException(
+            status_code=404,
+            detail="Owner can not be collaborator"
         )
     
     # Check if already a collaborator
@@ -235,17 +286,17 @@ def add_collaborator(
             detail=f"Failed to add collaborator: {str(e)}"
         )
     
-    # Get updated document with collaborators
-    return read_document(db=db, document_id=document_id, current_user=current_user)
+    # Return updated list of collaborators
+    return get_document_collaborators(db=db, document_id=document_id, current_user=current_user)
 
-@router.delete("/{document_id}/collaborators/{user_id}", response_model=DocumentWithCollaborators)
+@router.delete("/{document_id}/collaborators/{user_id}", response_model=List[CollaboratorResponse])
 def remove_collaborator(
     *,
     db: Session = Depends(get_db),
     document_id: int,
     user_id: int,
     current_user: User = Depends(get_current_user)
-) -> Document:
+) -> List[CollaboratorResponse]:
     """
     Remove a collaborator from the document.
     """
@@ -276,5 +327,5 @@ def remove_collaborator(
     db.delete(collaborator)
     db.commit()
     
-    # Get updated document with collaborators
-    return read_document(db=db, document_id=document_id, current_user=current_user) 
+    # Return updated list of collaborators
+    return get_document_collaborators(db=db, document_id=document_id, current_user=current_user) 

@@ -117,6 +117,11 @@ export const documentService = {
     return response.data;
   },
 
+  getCollaborators: async (documentId: number) => {
+    const response = await api.get(`/documents/${documentId}/collaborators`);
+    return response.data;
+  },
+
   addCollaborator: async (documentId: number, userId: number) => {
     const response = await api.post(`/documents/${documentId}/collaborators/${userId}`);
     return response.data;

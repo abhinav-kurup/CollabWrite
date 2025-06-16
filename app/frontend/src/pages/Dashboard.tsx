@@ -19,6 +19,7 @@ import {
   Switch,
   Menu,
   MenuItem,
+  Alert,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -26,10 +27,17 @@ import {
   Delete as DeleteIcon,
   Edit as EditIcon,
   PersonAdd as PersonAddIcon,
+  PersonRemove as PersonRemoveIcon,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { documentService } from '../services/api';
+
+interface Collaborator {
+  user_id: number;
+  username: string;
+  email: string;
+}
 
 interface Document {
   id: number;
@@ -47,6 +55,10 @@ const Dashboard: React.FC = () => {
   const [isPublic, setIsPublic] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
+  const [openCollaborators, setOpenCollaborators] = useState(false);
+  const [collaboratorId, setCollaboratorId] = useState('');
+  const [collaboratorError, setCollaboratorError] = useState<string | null>(null);
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
@@ -91,7 +103,47 @@ const Dashboard: React.FC = () => {
 
   const handleMenuClose = () => {
     setAnchorEl(null);
-    setSelectedDoc(null);
+  };
+
+  const fetchCollaborators = async (documentId: number) => {
+    try {
+      const response = await documentService.getCollaborators(documentId);
+      setCollaborators(response);
+    } catch (error) {
+      console.error('Error fetching collaborators:', error);
+      setCollaboratorError('Failed to fetch collaborators');
+    }
+  };
+
+  const handleAddCollaborator = async () => {
+    if (!selectedDoc || !collaboratorId) {
+      console.log('Missing selectedDoc or collaboratorId:', { selectedDoc, collaboratorId });
+      return;
+    }
+
+    try {
+      console.log('Adding collaborator:', { documentId: selectedDoc.id, userId: parseInt(collaboratorId) });
+      setCollaboratorError(null);
+      const response = await documentService.addCollaborator(selectedDoc.id, parseInt(collaboratorId));
+      setCollaborators(response);
+      setCollaboratorId('');
+      console.log('Collaborator added successfully');
+    } catch (error: any) {
+      console.error('Error adding collaborator:', error);
+      setCollaboratorError(error.response?.data?.detail || 'Failed to add collaborator');
+    }
+  };
+
+  const handleRemoveCollaborator = async (userId: number) => {
+    if (!selectedDoc) return;
+
+    try {
+      const response = await documentService.removeCollaborator(selectedDoc.id, userId);
+      setCollaborators(response);
+    } catch (error) {
+      console.error('Error removing collaborator:', error);
+      setCollaboratorError('Failed to remove collaborator');
+    }
   };
 
   return (
@@ -172,6 +224,98 @@ const Dashboard: React.FC = () => {
         </DialogActions>
       </Dialog>
 
+      {/* Collaborators Dialog */}
+      <Dialog 
+        open={openCollaborators} 
+        onClose={() => {
+          setOpenCollaborators(false);
+          setCollaboratorId('');
+          setCollaboratorError(null);
+          setCollaborators([]);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          Manage Collaborators - {selectedDoc?.title}
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ mb: 2 }}>
+            <TextField
+              label="User ID"
+              value={collaboratorId}
+              onChange={(e) => {
+                const value = e.target.value;
+                console.log('Setting collaborator ID to:', value);
+                setCollaboratorId(value);
+              }}
+              fullWidth
+              sx={{ mb: 1 }}
+              type="number"
+              inputProps={{ min: 1 }}
+              autoFocus
+            />
+            <Button
+              variant="contained"
+              startIcon={<PersonAddIcon />}
+              onClick={() => {
+                console.log('Add button clicked');
+                handleAddCollaborator();
+              }}
+              fullWidth
+              sx={{ mt: 2 }}
+            >
+              Add Collaborator
+            </Button>
+            {collaboratorError && (
+              <Alert severity="error" sx={{ mt: 1 }}>
+                {collaboratorError}
+              </Alert>
+            )}
+          </Box>
+          <Typography variant="subtitle1" sx={{ mb: 1 }}>
+            Current Collaborators:
+          </Typography>
+          <List>
+            {collaborators.length > 0 ? (
+              collaborators.map((collaborator) => (
+                <ListItem key={collaborator.user_id}>
+                  <ListItemText 
+                    primary={collaborator.username}
+                    secondary={collaborator.email}
+                  />
+                  <ListItemSecondaryAction>
+                    <IconButton
+                      edge="end"
+                      onClick={() => handleRemoveCollaborator(collaborator.user_id)}
+                      sx={{ color: 'error.main' }}
+                    >
+                      <PersonRemoveIcon />
+                    </IconButton>
+                  </ListItemSecondaryAction>
+                </ListItem>
+              ))
+            ) : (
+              <ListItem>
+                <ListItemText primary="No collaborators" />
+              </ListItem>
+            )}
+          </List>
+        </DialogContent>
+        <DialogActions>
+          <Button 
+            onClick={() => {
+              setOpenCollaborators(false);
+              setCollaboratorId('');
+              setCollaboratorError(null);
+              setCollaborators([]);
+            }}
+          >
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Document Menu */}
       <Menu
         anchorEl={anchorEl}
@@ -184,8 +328,17 @@ const Dashboard: React.FC = () => {
             navigate(`/document/${selectedDoc.id}`);
           }
         }}>
-          <EditIcon fontSize="small" sx={{ mr: 1 }} />
-          Edit
+          <EditIcon sx={{ mr: 1 }} /> Edit
+        </MenuItem>
+        <MenuItem onClick={() => {
+          console.log('Opening collaborators dialog for document:', selectedDoc);
+          handleMenuClose();
+          if (selectedDoc) {
+            setOpenCollaborators(true);
+            fetchCollaborators(selectedDoc.id);
+          }
+        }}>
+          <PersonAddIcon sx={{ mr: 1 }} /> Manage Collaborators
         </MenuItem>
         <MenuItem onClick={() => {
           handleMenuClose();
@@ -193,17 +346,7 @@ const Dashboard: React.FC = () => {
             handleDeleteDocument(selectedDoc.id);
           }
         }}>
-          <DeleteIcon fontSize="small" sx={{ mr: 1 }} />
-          Delete
-        </MenuItem>
-        <MenuItem onClick={() => {
-          handleMenuClose();
-          if (selectedDoc) {
-            // TODO: Implement collaborator management
-          }
-        }}>
-          <PersonAddIcon fontSize="small" sx={{ mr: 1 }} />
-          Manage Collaborators
+          <DeleteIcon sx={{ mr: 1 }} /> Delete
         </MenuItem>
       </Menu>
     </Container>
