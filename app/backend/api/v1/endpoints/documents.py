@@ -54,6 +54,12 @@ def read_documents(
         .limit(limit)
         .all()
     )
+    if not documents:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found"
+        )
+    print("Documents: ",type(documents))
     return documents
 
 @router.get("/{document_id}", response_model=DocumentWithCollaborators)
@@ -220,7 +226,14 @@ def add_collaborator(
         user_id=user_id
     )
     db.add(collaborator)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to add collaborator: {str(e)}"
+        )
     
     # Get updated document with collaborators
     return read_document(db=db, document_id=document_id, current_user=current_user)

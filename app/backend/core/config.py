@@ -7,8 +7,9 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "CollabWrite"
     
     # Security
-    SECRET_KEY: str = "your-secret-key-here"  # Change in production
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
+    SECRET_KEY: str = "your-secret-key-here"  # Will be overridden by env var
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 180  # Default 15 minutes
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7  # Default 7 days
     ALGORITHM: str = "HS256"  # JWT algorithm
     
     # Database

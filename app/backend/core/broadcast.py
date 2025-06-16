@@ -28,6 +28,14 @@ class ConnectionManager:
             self.message_queues[document_id] = asyncio.Queue()
             self.user_cursors[document_id] = {}
             self.document_states[document_id] = crdt
+        else:
+            # If document exists, merge the new CRDT with existing one
+            existing_crdt = self.document_states[document_id]
+            # Apply all characters from new CRDT to existing one
+            for char in crdt.characters:
+                existing_crdt.apply_remote_operation(char)
+            # Update the document state with merged CRDT
+            self.document_states[document_id] = existing_crdt
             
         # Add connection
         self.active_connections[document_id][user_id] = websocket
@@ -51,6 +59,16 @@ class ConnectionManager:
             },
             exclude_user=user_id
         )
+
+        # Send current document state to the new user
+        await websocket.send_json({
+            "type": "init",
+            "document_id": document_id,
+            "content": self.document_states[document_id].get_text(),
+            "crdt_state": self.document_states[document_id].to_dict(),
+            "cursors": self.user_cursors.get(document_id, {}),
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
     def disconnect(self, document_id: int, user_id: int):
         """Disconnect a user from a document session"""

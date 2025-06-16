@@ -3,6 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.backend.api.v1.api import api_router
 from app.backend.core.config import settings
 from app.backend.db.session import Base, engine
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -23,8 +28,4 @@ app.add_middleware(
 )
 
 # Include API router
-app.include_router(api_router, prefix=settings.API_V1_STR)
-
-@app.get("/")
-async def root():
-    return {"message": "Welcome to CollabWrite API"} 
+app.include_router(api_router, prefix=settings.API_V1_STR) 

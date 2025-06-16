@@ -1,14 +1,19 @@
 from typing import Generator, Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import jwt, JWTError
+from jose import jwt
+from jose.exceptions import JWTError, ExpiredSignatureError, JWTClaimsError
 from sqlalchemy.orm import Session
 from app.backend.core.config import settings
 from app.backend.core.security import verify_password
 from app.backend.db.session import SessionLocal
 from app.backend.models.user import User
 from app.backend.schemas.user import TokenData
+from app.backend.core.exceptions import AuthenticationError
 from fastapi import WebSocket
+
+
+
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
@@ -61,44 +66,31 @@ async def get_current_user_ws(websocket: WebSocket) -> User:
     """
     Get current user from WebSocket connection using token from query parameters.
     """
+    token = websocket.query_params.get("token")
+    if not token:
+        raise AuthenticationError("token not found")
+        
     try:
-        # Get token from query parameters
-        token = websocket.query_params.get("token")
-        if not token:
-            print("No token provided")
-            await websocket.close(code=4001, reason="No token provided")
-            return None
+        print("token")
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        print("payload",payload)
+        username = payload.get("sub")
             
-        # Verify token and get user
+        db = SessionLocal()
         try:
-            payload = jwt.decode(
-                token,
-                settings.SECRET_KEY,
-                algorithms=[settings.ALGORITHM]
-            )
-            username: str = payload.get("sub")
-            if username is None:
-                print("Invalid token: no username in payload")
-                await websocket.close(code=4002, reason="Invalid token")
+            user = db.query(User).filter(User.username == username).first()
+            if not user:
                 return None
-                
-            db = SessionLocal()
-            try:
-                user = db.query(User).filter(User.username == username).first()
-                if user is None:
-                    print(f"User not found: {username}")
-                    await websocket.close(code=4002, reason="User not found")
-                    return None
-                return user
-            finally:
-                db.close()
-                
-        except jwt.JWTError as e:
-            print(f"JWT Error: {str(e)}")
-            await websocket.close(code=4002, reason="Invalid token")
-            return None
+            return user
+        finally:
+            db.close()
             
-    except Exception as e:
-        print(f"WebSocket auth error: {str(e)}")
-        await websocket.close(code=4000, reason=str(e))
-        return None 
+    except ExpiredSignatureError as e:
+        print("Token has expired")
+        raise JWTError("Token expired") from e
+    except JWTClaimsError as e:
+        print("Invalid claims:", str(e))
+        raise JWTError("Invalid claims") from e
+    except JWTError as e:
+        print("General JWT error:", str(e))
+        raise

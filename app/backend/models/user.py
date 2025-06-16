@@ -19,8 +19,4 @@ class User(Base):
 
     # Relationships
     documents = relationship("Document", back_populates="owner")
-    shared_documents = relationship(
-        "Document",
-        secondary="document_collaborators",
-        back_populates="collaborators"
-    ) 
+    collaborations = relationship("DocumentCollaborator", back_populates="user") 
