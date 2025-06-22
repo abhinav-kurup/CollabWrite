@@ -8,7 +8,6 @@ from app.backend.schemas.document import (
     Document as DocumentSchema,
     DocumentCreate,
     DocumentUpdate,
-    DocumentWithCollaborators,
     CollaboratorResponse
 )
 
@@ -63,13 +62,13 @@ def read_documents(
     print("Documents: ",type(documents))
     return documents
 
-@router.get("/{document_id}", response_model=DocumentWithCollaborators)
+@router.get("/{document_id}", response_model=DocumentSchema)
 def read_document(
     *,
     db: Session = Depends(get_db),
     document_id: int,
     current_user: User = Depends(get_current_user)
-) -> DocumentWithCollaborators:
+) -> Document:
     """
     Get document by ID.
     """
@@ -94,24 +93,8 @@ def read_document(
             status_code=403,
             detail="Not enough permissions"
         )
-    # Get collaborator IDs
-    collaborator_ids = [
-        c.user_id for c in document.collaborators
-    ]
-    # Create response with collaborators
-    document_dict = {
-        "id": document.id,
-        "title": document.title,
-        "content": document.content,
-        "owner_id": document.owner_id,
-        "version": document.version,
-        "created_at": document.created_at,
-        "updated_at": document.updated_at,
-        "is_deleted": document.is_deleted,
-        "is_public": document.is_public,
-        "collaborators": collaborator_ids
-    }
-    return DocumentWithCollaborators(**document_dict)
+    
+    return document
 
 @router.put("/{document_id}", response_model=DocumentSchema)
 def update_document(
@@ -131,7 +114,18 @@ def update_document(
             status_code=404,
             detail="Document not found"
         )
-    if document.owner_id != current_user.id:
+    
+    # Check if user has access to the document (owner, public, or collaborator)
+    is_collaborator = db.query(DocumentCollaborator).filter(
+        DocumentCollaborator.document_id == document_id,
+        DocumentCollaborator.user_id == current_user.id
+    ).first() is not None
+    
+    if (
+        document.owner_id != current_user.id and
+        not document.is_public and
+        not is_collaborator
+    ):
         raise HTTPException(
             status_code=403,
             detail="Not enough permissions"
@@ -143,7 +137,6 @@ def update_document(
     # Handle content update
     if 'content' in update_data:
         content = update_data['content']
-        print(f"Content update: {content}")
         if isinstance(content, dict):
             # Always preserve the characters array from the update
             update_data['content'] = {
@@ -151,7 +144,6 @@ def update_document(
                 'characters': content.get('characters', []),
                 'version': content.get('version', document.version)
             }
-            print(f"Updated content structure: {update_data['content']}")
     
     for field, value in update_data.items():
         setattr(document, field, value)
@@ -160,7 +152,6 @@ def update_document(
     db.add(document)
     db.commit()
     db.refresh(document)
-    print(f"Updated document: {document.content}")
     return document
 
 @router.delete("/{document_id}", response_model=DocumentSchema)

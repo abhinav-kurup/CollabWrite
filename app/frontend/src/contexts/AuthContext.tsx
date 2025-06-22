@@ -28,14 +28,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Check if user is already logged in
     const checkAuth = async () => {
       const token = localStorage.getItem('access_token');
-      if (token) {
+      const userId = localStorage.getItem('user_id');
+      if (token && userId) {
         try {
           // You might want to add an endpoint to get the current user's info
-          // For now, we'll just check if the token exists
-          setUser({ id: 0, email: '', username: '' }); // Placeholder
+          // For now, we'll use the stored user_id
+          setUser({ id: parseInt(userId), email: '', username: '' }); // Use stored user_id
         } catch (error) {
           localStorage.removeItem('access_token');
           localStorage.removeItem('refresh_token');
+          localStorage.removeItem('user_id');
         }
       }
       setLoading(false);
@@ -47,10 +49,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (username: string, password: string) => {
     try {
       const response = await authService.login(username, password);
-      const { access_token, refresh_token } = response;
+      const { access_token, refresh_token, user_id } = response;
       localStorage.setItem('access_token', access_token);
       localStorage.setItem('refresh_token', refresh_token);
-      setUser({ id: 0, email: '', username }); // Placeholder
+      localStorage.setItem('user_id', user_id.toString());
+      setUser({ id: user_id, email: '', username }); // Use actual user_id from backend
       navigate('/dashboard');
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -86,6 +89,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
+    localStorage.removeItem('user_id');
     setUser(null);
     navigate('/login');
   };

@@ -149,7 +149,6 @@ function CollaborationPlugin({
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log('Received message:', data);
         
         switch (data.type) {
           case 'init':
@@ -306,16 +305,12 @@ const DocumentEditor: React.FC = () => {
     const loadDocument = async () => {
       try {
         if (!id) return;
-        console.log('Loading document with ID:', id);
         const doc = await documentService.getDocument(parseInt(id));
-        console.log('Received document:', doc);
         setDocument(doc);
         
         // Handle content initialization
         if (doc.content) {
-          console.log('Document content:', doc.content);
           if (typeof doc.content === 'string') {
-            console.log('Legacy content format detected');
             setContent(doc.content);
             setCrdtState({
               text: doc.content,
@@ -323,12 +318,10 @@ const DocumentEditor: React.FC = () => {
               version: doc.version
             });
           } else if (doc.content.text) {
-            console.log('New content format detected');
             setContent(doc.content.text);
             setCrdtState(doc.content);
           }
         } else {
-          console.log('No content found in document');
           setContent('');
           setCrdtState({
             text: '',
@@ -349,7 +342,7 @@ const DocumentEditor: React.FC = () => {
 
   // Handle content changes
   const handleContentChange = useCallback(async (editorState: EditorState, editor: LexicalEditor) => {
-    if (!id || !document || !user) return;
+    if (!id || !document) return;
 
     setSaveStatus('saving');
     try {
@@ -357,13 +350,15 @@ const DocumentEditor: React.FC = () => {
         const root = $getRoot();
         return root.getTextContent();
       });
-      console.log('Saving content:', content);
+
+      // Get user ID - try from context first, then localStorage as fallback
+      const userId = user?.id || parseInt(localStorage.getItem('user_id') || '0');
 
       // Create CRDT characters for new content
       const newCharacters = Array.from(content).map((char, index) => ({
         value: char,
         position: {
-          site_id: user.id.toString(),
+          site_id: userId.toString(),
           counter: index,
           timestamp: Date.now()
         },
@@ -376,7 +371,6 @@ const DocumentEditor: React.FC = () => {
         characters: newCharacters,
         version: (crdtState?.version || 0) + 1
       };
-      console.log('Updated content with CRDT state:', updatedContent);
 
       const response = await documentService.updateDocument(parseInt(id), {
         content: updatedContent
@@ -401,7 +395,6 @@ const DocumentEditor: React.FC = () => {
       setError('An error occurred in the editor');
     },
     editorState: () => {
-      console.log('Initializing editor with content:', content);
       const root = $getRoot();
       root.clear();
       const paragraph = $createParagraphNode();
@@ -505,7 +498,7 @@ const DocumentEditor: React.FC = () => {
               {user && (
                 <CollaborationPlugin
                   documentId={parseInt(id!)}
-                  userId={user.id}
+                  userId={user.id || parseInt(localStorage.getItem('user_id') || '0')}
                   wsUrl={`ws://localhost:8000/api/v1/ws/${id}`}
                   initialCrdtState={crdtState}
                 />

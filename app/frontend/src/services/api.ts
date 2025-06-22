@@ -43,9 +43,10 @@ api.interceptors.response.use(
           refresh_token: refreshToken,
         });
 
-        const { access_token, refresh_token } = response.data;
+        const { access_token, refresh_token, user_id } = response.data;
         localStorage.setItem('access_token', access_token);
         localStorage.setItem('refresh_token', refresh_token);
+        localStorage.setItem('user_id', user_id.toString());
 
         // Update the original request with the new token
         originalRequest.headers.Authorization = `Bearer ${access_token}`;
@@ -54,6 +55,7 @@ api.interceptors.response.use(
         // If refresh token fails, clear storage and redirect to login
         localStorage.removeItem('access_token');
         localStorage.removeItem('refresh_token');
+        localStorage.removeItem('user_id');
         window.location.href = '/login';
         return Promise.reject(refreshError);
       }
