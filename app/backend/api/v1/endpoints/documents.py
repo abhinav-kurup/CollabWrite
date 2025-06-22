@@ -242,11 +242,15 @@ def add_collaborator(
     """
     Add a collaborator to the document.
     """
-    if current_user.id == user_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Owner can not be collaborator"
-        )
+    # if current_user.id == user_id:
+    #     raise HTTPException(
+    #         status_code=400,
+    #         detail="User cannot add the"
+    #     )
+    # raise HTTPException(
+    #         status_code=400,
+    #         detail="Owner can not be collaborator"
+    #     )
     document = db.query(Document).filter(Document.id == document_id).first()
     if not document:
         raise HTTPException(

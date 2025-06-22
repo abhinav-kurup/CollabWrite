@@ -25,15 +25,22 @@ const Register: React.FC = () => {
     e.preventDefault();
     setError(''); // Clear any previous errors
 
-    // Validate passwords match
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setError('Please enter a valid email address');
       return;
     }
 
-    // Validate password length
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters long');
+    // Validate username length
+    if (username.length < 3) {
+      setError('Username must be at least 3 characters long');
+      return;
+    }
+
+    // Validate passwords match
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
       return;
     }
 

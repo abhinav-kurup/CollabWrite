@@ -168,30 +168,54 @@ const Dashboard: React.FC = () => {
       </Box>
 
       <Paper sx={{ p: 2 }}>
-        <List>
-          {documents.map((doc) => (
-            <ListItem
-              key={doc.id}
-              button
-              onClick={() => navigate(`/document/${doc.id}`)}
-              sx={{ mb: 1, border: '1px solid #eee', borderRadius: 1 }}
+        {documents.length > 0 ? (
+          <List>
+            {documents.map((doc) => (
+              <ListItem
+                key={doc.id}
+                button
+                onClick={() => navigate(`/document/${doc.id}`)}
+                sx={{ mb: 1, border: '1px solid #eee', borderRadius: 1 }}
+              >
+                <ListItemText
+                  primary={doc.title}
+                  secondary={`Last updated: ${new Date(doc.updated_at).toLocaleString()}`}
+                />
+                <ListItemSecondaryAction>
+                  <IconButton
+                    edge="end"
+                    aria-label="more"
+                    onClick={(e) => handleMenuOpen(e, doc)}
+                  >
+                    <MoreVertIcon />
+                  </IconButton>
+                </ListItemSecondaryAction>
+              </ListItem>
+            ))}
+          </List>
+        ) : (
+          <Box sx={{ 
+            display: 'flex', 
+            flexDirection: 'column', 
+            alignItems: 'center', 
+            py: 4,
+            textAlign: 'center'
+          }}>
+            <Typography variant="h6" color="text.secondary" sx={{ mb: 2 }}>
+              No documents found
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+              Create your first document to get started with collaborative editing
+            </Typography>
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => setOpenNewDoc(true)}
             >
-              <ListItemText
-                primary={doc.title}
-                secondary={`Last updated: ${new Date(doc.updated_at).toLocaleString()}`}
-              />
-              <ListItemSecondaryAction>
-                <IconButton
-                  edge="end"
-                  aria-label="more"
-                  onClick={(e) => handleMenuOpen(e, doc)}
-                >
-                  <MoreVertIcon />
-                </IconButton>
-              </ListItemSecondaryAction>
-            </ListItem>
-          ))}
-        </List>
+              Create Your First Document
+            </Button>
+          </Box>
+        )}
       </Paper>
 
       {/* New Document Dialog */}
