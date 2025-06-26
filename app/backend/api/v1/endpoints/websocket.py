@@ -11,246 +11,215 @@ from datetime import datetime
 import json
 import asyncio
 from jose import JWTError
+from ...deps import get_current_user_ws
+from ....models.document import Document
+from sqlalchemy.orm import Session
+from ....db.session import SessionLocal
 
 router = APIRouter()
 
 # Store active connections and document sessions
 class ConnectionManager:
     def __init__(self):
-        # Store active connections: {document_id: {user_id: WebSocket}}
+        # document_id -> {user_id -> WebSocket}
         self.active_connections: Dict[int, Dict[int, WebSocket]] = {}
-        # Store user sessions: {user_id: Set[document_id]}
-        self.user_sessions: Dict[int, Set[int]] = {}
-        # Store CRDT instances: {document_id: CRDT}
-        self.crdt_instances: Dict[int, CRDT] = {}
-        # Store user cursors: {document_id: {user_id: cursor_position}}
-        self.user_cursors: Dict[int, Dict[int, int]] = {}
-        # Store message queues: {document_id: asyncio.Queue}
-        self.message_queues: Dict[int, asyncio.Queue] = {}
+        # document_id -> {user_id -> cursor_position}
+        self.user_cursors: Dict[int, Dict[int, dict]] = {}
+        # document_id -> document_state
+        self.document_states: Dict[int, dict] = {}
 
-    async def connect(self, websocket: WebSocket, document_id: int, user_id: int, crdt: CRDT):
+    async def connect(self, websocket: WebSocket, document_id: int, user_id: int):
         await websocket.accept()
+        
         if document_id not in self.active_connections:
             self.active_connections[document_id] = {}
-            self.user_cursors[document_id] = {}  # Initialize user_cursors for this document
-            self.message_queues[document_id] = asyncio.Queue()  # Initialize message queue
-        self.active_connections[document_id][user_id] = websocket
+            self.user_cursors[document_id] = {}
+            
+            # Initialize document state from database
+            db = SessionLocal()
+            try:
+                document = db.query(Document).filter(Document.id == document_id).first()
+                if document and document.content:
+                    self.document_states[document_id] = document.content
+                else:
+                    self.document_states[document_id] = {"text": "", "characters": [], "version": 0}
+            finally:
+                db.close()
         
-        if user_id not in self.user_sessions:
-            self.user_sessions[user_id] = set()
-        self.user_sessions[user_id].add(document_id)
-
-        # Initialize or load CRDT instance
-        if document_id not in self.crdt_instances:
-            self.crdt_instances[document_id] = crdt
+        self.active_connections[document_id][user_id] = websocket
+        print(f"User {user_id} connected to document {document_id}")
+        
+        # Send initial state to the new connection
+        await websocket.send_json({
+            "type": "init",
+            "state": self.document_states[document_id],
+            "cursors": self.user_cursors[document_id]
+        })
 
     def disconnect(self, document_id: int, user_id: int):
         if document_id in self.active_connections:
             self.active_connections[document_id].pop(user_id, None)
+            self.user_cursors[document_id].pop(user_id, None)
+            
+            # Clean up empty document entries
             if not self.active_connections[document_id]:
-                del self.active_connections[document_id]
-                # Clean up CRDT instance when no users are connected
-                self.crdt_instances.pop(document_id, None)
+                self.active_connections.pop(document_id, None)
                 self.user_cursors.pop(document_id, None)
-                self.message_queues.pop(document_id, None)
-        
-        if user_id in self.user_sessions:
-            self.user_sessions[user_id].discard(document_id)
-            if not self.user_sessions[user_id]:
-                del self.user_sessions[user_id]
+                self.document_states.pop(document_id, None)
 
-    async def broadcast_to_document(self, document_id: int, message: dict, exclude_user: int = None):
+    async def broadcast_message(self, document_id: int, message: dict, exclude_user: int = None):
         if document_id in self.active_connections:
             for user_id, connection in self.active_connections[document_id].items():
-                if user_id != exclude_user:
+                if user_id != exclude_user:  # Don't send back to the sender
                     try:
                         await connection.send_json(message)
-                    except RuntimeError:
-                        # If connection is closed, remove it
+                    except Exception as e:
+                        print(f"Error broadcasting to user {user_id}: {e}")
+                        # Handle disconnection
                         self.disconnect(document_id, user_id)
 
-    async def queue_message(self, document_id: int, message: dict):
-        """Queue a message for processing"""
-        if document_id in self.message_queues:
-            await self.message_queues[document_id].put(message)
+    def update_cursor(self, document_id: int, user_id: int, cursor_data: dict):
+        if document_id not in self.user_cursors:
+            self.user_cursors[document_id] = {}
+        self.user_cursors[document_id][user_id] = cursor_data
 
-    async def _process_messages(self, document_id: int):
-        """Process messages from the queue"""
-        while True:
-            try:
-                message = await self.message_queues[document_id].get()
-                message_type = message.get("type")
-                
-                if message_type == "edit":
-                    await self._handle_edit(document_id, message)
-                elif message_type == "delete":
-                    await self._handle_delete(document_id, message)
-                elif message_type == "paste":
-                    await self._handle_paste(document_id, message)
-                elif message_type == "cut":
-                    await self._handle_cut(document_id, message)
-                elif message_type == "cursor":
-                    await self._handle_cursor(document_id, message)
-                
-                self.message_queues[document_id].task_done()
-            except Exception as e:
-                print(f"Error processing message: {str(e)}")
-                continue
+    def get_cursors(self, document_id: int) -> dict:
+        return self.user_cursors.get(document_id, {})
 
-    async def _handle_edit(self, document_id: int, message: dict):
-        """Handle edit operations"""
-        user_id = message.get("user_id")
-        value = message.get("value")
-        index = message.get("index")
-        
-        if not all([user_id, value, index is not None]):
-            return
-        
-        # Get the CRDT instance for this document
-        if document_id not in self.crdt_instances:
-            return
-            
-        crdt = self.crdt_instances[document_id]
-        
-        # Insert the character using CRDT
-        char = crdt.insert(index, value)
-        
-        # Broadcast the updated state to all users
-        await self.broadcast_to_document(
-            document_id,
-            {
-                "type": "edit",
-                "state": crdt.to_dict(),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
+    def update_document_state(self, document_id: int, state: dict):
+        self.document_states[document_id] = state
 
-    async def _handle_delete(self, document_id: int, message: dict):
-        """Handle delete operations"""
-        user_id = message.get("user_id")
-        index = message.get("index")
-        
-        if not all([user_id, index is not None]):
-            return
-            
-        if document_id not in self.crdt_instances:
-            return
-            
-        crdt = self.crdt_instances[document_id]
-        
-        # Delete the character using CRDT
-        crdt.delete(index)
-        
-        # Broadcast the updated state
-        await self.broadcast_to_document(
-            document_id,
-            {
-                "type": "edit",
-                "state": crdt.to_dict(),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
-
-    async def _handle_paste(self, document_id: int, message: dict):
-        """Handle paste operations"""
-        user_id = message.get("user_id")
-        text = message.get("text")
-        index = message.get("index")
-        
-        if not all([user_id, text, index is not None]):
-            return
-            
-        if document_id not in self.crdt_instances:
-            return
-            
-        crdt = self.crdt_instances[document_id]
-        
-        # Insert each character using CRDT
-        for char in text:
-            crdt.insert(index, char)
-            index += 1
-        
-        # Broadcast the updated state
-        await self.broadcast_to_document(
-            document_id,
-            {
-                "type": "edit",
-                "state": crdt.to_dict(),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
-
-    async def _handle_cut(self, document_id: int, message: dict):
-        """Handle cut operations"""
-        user_id = message.get("user_id")
-        start_index = message.get("startIndex")
-        end_index = message.get("endIndex")
-        
-        if not all([user_id, start_index is not None, end_index is not None]):
-            return
-            
-        if document_id not in self.crdt_instances:
-            return
-            
-        crdt = self.crdt_instances[document_id]
-        
-        # Delete characters in range using CRDT
-        for i in range(start_index, end_index):
-            crdt.delete(start_index)  # Always delete at start_index as it shifts
-        
-        # Broadcast the updated state
-        await self.broadcast_to_document(
-            document_id,
-            {
-                "type": "edit",
-                "state": crdt.to_dict(),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
-
-    async def _handle_cursor(self, document_id: int, message: dict):
-        """Handle cursor position updates"""
-        user_id = message.get("user_id")
-        position = message.get("position")
-        
-        if not all([user_id, position]):
-            return
-        
-        # Update cursor position
-        if document_id in self.user_cursors:
-            self.user_cursors[document_id][user_id] = position
-        
-        # Broadcast to other users
-        await self.broadcast_to_document(
-            document_id,
-            {
-                "type": "cursor",
-                "user_id": user_id,
-                "position": position,
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            exclude_user=user_id
-        )
-
-    async def _handle_sync_request(self, document_id: int, message: dict):
-        """Handle sync requests"""
-        user_id = message.get("user_id")
-        
-        if not user_id or document_id not in self.crdt_instances:
-            return
-        
-        # Send current document state
-        if document_id in self.active_connections and user_id in self.active_connections[document_id]:
-            connection = self.active_connections[document_id][user_id]
-            await connection.send_json({
-                "type": "sync_response",
-                "document_id": document_id,
-                "state": self.crdt_instances[document_id].to_dict(),
-                "cursors": self.user_cursors.get(document_id, {}),
-                "timestamp": datetime.utcnow().isoformat()
-            })
+    def get_document_state(self, document_id: int) -> dict:
+        return self.document_states.get(document_id, {})
 
 manager = ConnectionManager()
+
+async def save_document_state(document_id: int, state: dict):
+    try:
+        db = SessionLocal()
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if document:
+            # Ensure we have all required fields
+            if not isinstance(state, dict):
+                print(f"Error: Invalid state format for document {document_id}")
+                return
+                
+            if 'text' not in state:
+                print(f"Error: Missing text field in state for document {document_id}")
+                return
+                
+            # Update the document content
+            document.content = state
+            document.version += 1
+            db.commit()
+            db.refresh(document)
+            print(f"Saved document {document_id} state, new version: {document.version}")
+            print(f"Updated content: {document.content}")
+    except Exception as e:
+        print(f"Error saving document state: {e}")
+        # Rollback on error
+        try:
+            db.rollback()
+        except:
+            pass
+    finally:
+        db.close()
+
+async def periodic_save(document_id: int, save_interval: int = 10):
+    print(f"Starting periodic save for document {document_id} every {save_interval} seconds")
+    while True:
+        try:
+            await asyncio.sleep(save_interval)
+            state = manager.get_document_state(document_id)
+            if state:
+                print(f"Periodic save: saving document {document_id} with state:", state)
+                await save_document_state(document_id, state)
+            else:
+                print(f"Periodic save: no state to save for document {document_id}")
+        except asyncio.CancelledError:
+            # Save one last time before exiting
+            try:
+                state = manager.get_document_state(document_id)
+                if state:
+                    print(f"Final save: saving document {document_id} before exit")
+                    await save_document_state(document_id, state)
+            except Exception as e:
+                print(f"Error during final save: {e}")
+            break
+        except Exception as e:
+            print(f"Error in periodic save: {e}")
+
+async def process_messages(websocket: WebSocket, document_id: int, user_id: int):
+    try:
+        while True:
+            message = await websocket.receive_json()
+            message_type = message.get("type")
+            print(f"Received message from user {user_id} for document {document_id}: {message_type}")
+
+            if message_type == "cursor":
+                manager.update_cursor(document_id, user_id, message.get("data", {}))
+                await manager.broadcast_message(
+                    document_id,
+                    {
+                        "type": "cursor",
+                        "user_id": user_id,
+                        "data": message.get("data", {})
+                    },
+                    exclude_user=user_id
+                )
+
+            elif message_type == "update":
+                content = message.get("content")
+                if content and isinstance(content, dict) and 'text' in content:
+                    print(f"Processing update from user {user_id} for document {document_id}:")
+                    print(f"Content before update: {manager.get_document_state(document_id)}")
+                    print(f"New content: {content}")
+                    
+                    # Update in-memory state
+                    manager.update_document_state(document_id, content)
+                    
+                    # Immediately save to database
+                    try:
+                        await save_document_state(document_id, content)
+                        print(f"Successfully saved update from user {user_id} for document {document_id}")
+                    except Exception as e:
+                        print(f"Error saving update: {e}")
+                    
+                    # Broadcast to other users
+                    await manager.broadcast_message(
+                        document_id,
+                        {
+                            "type": "update",
+                            "user_id": user_id,
+                            "content": content
+                        },
+                        exclude_user=user_id
+                    )
+                else:
+                    print(f"Invalid update content received from user {user_id}: {content}")
+
+            elif message_type == "sync_request":
+                state = manager.get_document_state(document_id)
+                if state:
+                    await websocket.send_json({
+                        "type": "sync_response",
+                        "content": state
+                    })
+                    print(f"Sent sync response to user {user_id} for document {document_id}")
+
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for user {user_id} in document {document_id}")
+        manager.disconnect(document_id, user_id)
+        await manager.broadcast_message(
+            document_id,
+            {
+                "type": "user_disconnected",
+                "user_id": user_id
+            }
+        )
+    except Exception as e:
+        print(f"Error processing messages: {e}")
+        manager.disconnect(document_id, user_id)
 
 @router.websocket("/ws/{document_id}")
 async def websocket_endpoint(
@@ -304,12 +273,15 @@ async def websocket_endpoint(
         crdt = CRDT(site_id=str(current_user.id))
     
     # Connect to WebSocket
-    await manager.connect(websocket, document_id, current_user.id, crdt)
+    await manager.connect(websocket, document_id, current_user.id)
     
     try:
-        # Start message processing task
+        # Start the periodic save task
+        save_task = asyncio.create_task(periodic_save(document_id))
+        
+        # Start processing messages
         message_processor = asyncio.create_task(
-            manager._process_messages(document_id)
+            process_messages(websocket, document_id, current_user.id)
         )
         
         # Send initial state
@@ -317,22 +289,36 @@ async def websocket_endpoint(
             "type": "init",
             "document_id": document_id,
             "state": crdt.to_dict(),
-            "cursors": manager.user_cursors.get(document_id, {}),
+            "cursors": manager.get_cursors(document_id),
             "timestamp": datetime.utcnow().isoformat()
         })
         
-        # Handle incoming messages
-        while True:
-            try:
-                data = await websocket.receive_json()
-                data["user_id"] = current_user.id
-                await manager.queue_message(document_id, data)
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                continue
+        # Wait for the message processor to complete
+        await message_processor
+        
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for user {current_user.id} in document {document_id}")
+    except Exception as e:
+        print(f"Error in websocket endpoint: {e}")
     finally:
-        # Clean up
-        message_processor.cancel()
+        # Clean up tasks
+        if message_processor:
+            message_processor.cancel()
+            try:
+                await message_processor
+            except asyncio.CancelledError:
+                pass
+                
+        if save_task:
+            save_task.cancel()
+            try:
+                await save_task
+            except asyncio.CancelledError:
+                pass
+                
         manager.disconnect(document_id, current_user.id)
-        await websocket.close() 
+        print(f"Cleaned up connection for user {current_user.id} in document {document_id}")
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass  # Already closed 

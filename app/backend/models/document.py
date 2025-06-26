@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON, event
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.backend.db.session import Base
@@ -8,7 +8,7 @@ class Document(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, index=True)
-    content = Column(JSON)  # Store CRDT data as JSON
+    content = Column(JSON)  # Store document content as JSON
     owner_id = Column(Integer, ForeignKey("users.id"))
     version = Column(Integer, default=1)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -19,6 +19,39 @@ class Document(Base):
     # Relationships
     owner = relationship("User", back_populates="documents")
     collaborators = relationship("DocumentCollaborator", back_populates="document", cascade="all, delete-orphan")
+
+    def update_content(self, new_content: dict) -> None:
+        """
+        Update document content with version handling
+        """
+        if not isinstance(new_content, dict):
+            raise ValueError("Content must be a dictionary")
+            
+        if self.content is None:
+            self.content = {
+                "text": "",
+                "characters": [],
+                "version": 1
+            }
+            
+        # Ensure content has required fields
+        if "text" not in new_content or "characters" not in new_content:
+            raise ValueError("Content must include 'text' and 'characters' fields")
+            
+        # Update content and increment version
+        self.content.update(new_content)
+        self.version += 1
+        self.content["version"] = self.version
+
+@event.listens_for(Document, 'before_update')
+def document_before_update(mapper, connection, target):
+    """Ensure content is properly structured before update"""
+    if target.content is not None and isinstance(target.content, dict):
+        if "text" not in target.content:
+            target.content["text"] = ""
+        if "characters" not in target.content:
+            target.content["characters"] = []
+        target.content["version"] = target.version
 
 class DocumentCollaborator(Base):
     __tablename__ = "document_collaborators"

@@ -110,8 +110,15 @@ export const documentService = {
   },
 
   updateDocument: async (id: number, data: { title?: string; content?: any; is_public?: boolean }) => {
-    const response = await api.put(`/documents/${id}`, data);
-    return response.data;
+    console.log(`Making PUT request to /documents/${id} with data:`, data);
+    try {
+      const response = await api.put(`/documents/${id}`, data);
+      console.log(`Update document response for id ${id}:`, response.data);
+      return response.data;
+    } catch (error) {
+      console.error(`Error updating document ${id}:`, error);
+      throw error;
+    }
   },
 
   deleteDocument: async (id: number) => {

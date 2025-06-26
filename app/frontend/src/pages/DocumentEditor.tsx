@@ -29,13 +29,13 @@ import { LinkPlugin } from '@lexical/react/LexicalLinkPlugin';
 import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPlugin';
 import { TRANSFORMERS } from '@lexical/markdown';
-import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $getRoot, $createParagraphNode, $createTextNode, EditorState, LexicalEditor } from 'lexical';
 import { HeadingNode, QuoteNode } from '@lexical/rich-text';
 import { ListItemNode, ListNode } from '@lexical/list';
 import { LinkNode } from '@lexical/link';
 import { CodeNode, CodeHighlightNode } from '@lexical/code';
+import { debounce } from 'lodash';
 
 // Error boundary component for the editor
 function EditorErrorBoundary({ children }: { children: React.ReactNode }) {
@@ -60,232 +60,197 @@ function CollaborationPlugin({
   documentId, 
   userId, 
   wsUrl,
-  initialCrdtState
+  initialCrdtState,
+  onSave
 }: { 
   documentId: number;
   userId: number;
   wsUrl: string;
   initialCrdtState: any;
+  onSave: (content: any) => Promise<void>;
 }) {
   const [editor] = useLexicalComposerContext();
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
-  const messageQueueRef = useRef<Array<{ type: string; data: any }>>([]);
   const isConnectingRef = useRef(false);
   const isClosingRef = useRef(false);
   const initialSyncDoneRef = useRef(false);
-  const lastContentRef = useRef<string>('');
-
-  const sendMessage = useCallback((type: string, data: any) => {
-    if (ws && connected && ws.readyState === WebSocket.OPEN) {
-      try {
-        ws.send(JSON.stringify({ type, ...data }));
-      } catch (error) {
-        console.error('Error sending message:', error);
-        // Queue the message if sending fails
-        messageQueueRef.current.push({ type, data });
-      }
-    } else {
-      messageQueueRef.current.push({ type, data });
-    }
-  }, [ws, connected]);
-
-  const processMessageQueue = useCallback(() => {
-    if (!ws || !connected || ws.readyState !== WebSocket.OPEN) return;
-
-    while (messageQueueRef.current.length > 0) {
-      const { type, data } = messageQueueRef.current.shift()!;
-      try {
-        ws.send(JSON.stringify({ type, ...data }));
-      } catch (error) {
-        console.error('Error processing message queue:', error);
-        // Put the message back in the queue
-        messageQueueRef.current.unshift({ type, data });
-        break;
-      }
-    }
-  }, [ws, connected]);
-
-  const closeWebSocket = useCallback(() => {
-    if (ws && !isClosingRef.current) {
-      isClosingRef.current = true;
-      try {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close(1000, 'Normal closure');
-        }
-      } catch (error) {
-        console.error('Error closing WebSocket:', error);
-      }
-      setWs(null);
-      setConnected(false);
-      isClosingRef.current = false;
-    }
-  }, [ws]);
+  const lastTextRef = useRef<string>('');
+  const lastSelectionRef = useRef<any>(null);
+  const suppressLocalChangeRef = useRef(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout>();
 
   const connectWebSocket = useCallback(() => {
     if (isConnectingRef.current || ws) return;
     isConnectingRef.current = true;
-
     const token = localStorage.getItem('access_token');
     if (!token) {
       setError('No authentication token found');
       isConnectingRef.current = false;
       return;
     }
-
     const wsUrlWithToken = `${wsUrl}?token=${token}`;
     const socket = new WebSocket(wsUrlWithToken);
-    
     socket.onopen = () => {
-      console.log('WebSocket connected');
       setConnected(true);
       setError(null);
       isConnectingRef.current = false;
-      processMessageQueue();
+      console.log('WebSocket connected');
     };
-
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        console.log('Received WebSocket message:', data);
         
-        switch (data.type) {
-          case 'init':
-          case 'sync_response':
-            // Only update content if we haven't done initial sync
-            if (!initialSyncDoneRef.current) {
-              const newContent = data.state.text || '';
-              if (newContent !== lastContentRef.current) {
-                editor.update(() => {
-                  const root = $getRoot();
-                  root.clear();
-                  const paragraph = $createParagraphNode();
-                  paragraph.append($createTextNode(newContent));
-                  root.append(paragraph);
-                });
-                lastContentRef.current = newContent;
-              }
-              initialSyncDoneRef.current = true;
-            }
-            break;
-            
-          case 'edit':
-            // Only apply remote edits if they're from other users
-            if (data.user_id !== userId) {
-              const newContent = data.state.text || '';
-              if (newContent !== lastContentRef.current) {
-                editor.update(() => {
-                  const root = $getRoot();
-                  root.clear();
-                  const paragraph = $createParagraphNode();
-                  paragraph.append($createTextNode(newContent));
-                  root.append(paragraph);
-                });
-                lastContentRef.current = newContent;
-              }
-            }
-            break;
-            
-          case 'cursor':
-            // Handle cursor updates
-            break;
-
-          case 'error':
-            setError(data.message || 'An error occurred');
-            break;
+        if (data.type === 'init' || data.type === 'sync_response') {
+          // Initial sync: set the editor content
+          if (!initialSyncDoneRef.current) {
+            suppressLocalChangeRef.current = true;
+            editor.update(() => {
+              const root = $getRoot();
+              root.clear();
+              const paragraph = $createParagraphNode();
+              const text = data.state.text || data.content?.text || '';
+              paragraph.append($createTextNode(text));
+              root.append(paragraph);
+            });
+            lastTextRef.current = data.state.text || data.content?.text || '';
+            suppressLocalChangeRef.current = false;
+            initialSyncDoneRef.current = true;
+          }
+        } else if (data.type === 'update' && data.content) {
+          // Remote content update: apply to editor
+          if (data.user_id !== userId) {
+            suppressLocalChangeRef.current = true;
+            editor.update(() => {
+              const root = $getRoot();
+              root.clear();
+              const paragraph = $createParagraphNode();
+              const text = data.content.text || '';
+              paragraph.append($createTextNode(text));
+              root.append(paragraph);
+            });
+            lastTextRef.current = data.content.text || '';
+            suppressLocalChangeRef.current = false;
+          }
         }
       } catch (error) {
         console.error('Error processing message:', error);
       }
     };
-
     socket.onclose = (event) => {
-      console.log('WebSocket closed:', event.code, event.reason);
       setConnected(false);
       isConnectingRef.current = false;
       setWs(null);
-
-      // Only attempt reconnect for unexpected closures
+      console.log('WebSocket disconnected:', event.code, event.reason);
       if (event.code !== 1000 && event.code !== 1001) {
-        if (event.code === 4001) {
-          setError('Authentication failed');
-        } else if (event.code === 4002) {
-          setError('Invalid token');
-        } else if (event.code === 4003) {
-          setError('Access denied');
-        } else if (event.code === 4004) {
-          setError('Document not found');
-        } else {
-          setError('Connection closed unexpectedly');
-        }
-
-        // Attempt to reconnect after a delay
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-        }
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connectWebSocket();
-        }, 5000);
+        setError('Connection closed unexpectedly');
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => { connectWebSocket(); }, 5000);
       }
     };
-
     socket.onerror = (error) => {
-      console.error('WebSocket error:', error);
       setError('Connection error');
       isConnectingRef.current = false;
+      console.error('WebSocket error:', error);
     };
-
     setWs(socket);
-  }, [documentId, userId, wsUrl, editor]);
+  }, [ws, wsUrl, userId, editor]);
 
   useEffect(() => {
     connectWebSocket();
-
     return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (ws) {
-        ws.close(1000, 'Component unmounting');
-      }
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      if (ws) ws.close(1000, 'Component unmounting');
     };
   }, [connectWebSocket]);
 
-  // Send local changes to server
+  // --- Detect and send content updates ---
   useEffect(() => {
     if (!ws || !connected) return;
-
+    
     const removeUpdateListener = editor.registerUpdateListener(({ editorState }) => {
+      if (suppressLocalChangeRef.current) return;
+      
       editorState.read(() => {
         const root = $getRoot();
-        const content = root.getTextContent();
+        const newText = root.getTextContent();
+        const oldText = lastTextRef.current;
         
-        // Only send if content has changed
-        if (content !== lastContentRef.current) {
-          lastContentRef.current = content;
-          sendMessage('edit', {
-            document_id: documentId,
-            user_id: userId,
-            content: content
-          });
+        if (newText !== oldText) {
+          console.log('Content changed, sending update:', { oldText, newText });
+          
+          // Create character array for CRDT
+          const characters = Array.from(newText).map((char, index) => ({
+            value: char,
+            position: {
+              site_id: userId.toString(),
+              counter: index,
+              timestamp: Date.now()
+            },
+            deleted: false
+          }));
+          
+          // Send update to WebSocket
+          const updateContent = {
+            text: newText,
+            characters: characters,
+            version: Date.now()
+          };
+          
+          try {
+            ws.send(JSON.stringify({
+              type: 'update',
+              content: updateContent,
+              user_id: userId,
+              document_id: documentId
+            }));
+            console.log('Sent update to WebSocket:', updateContent);
+            
+            // Debounced save to database
+            if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+            saveTimeoutRef.current = setTimeout(async () => {
+              try {
+                await onSave(updateContent);
+                console.log('Content saved to database:', updateContent);
+              } catch (error) {
+                console.error('Error saving content:', error);
+              }
+            }, 2000); // Save after 2 seconds of no changes
+          } catch (error) {
+            console.error('Error sending update:', error);
+          }
+          
+          lastTextRef.current = newText;
         }
       });
     });
 
     return () => {
       removeUpdateListener();
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
     };
-  }, [ws, connected, editor, documentId, userId, sendMessage]);
+  }, [ws, connected, editor, userId, documentId, onSave]);
 
   if (error) {
     return (
-      <Alert severity="error" sx={{ mb: 2 }}>
-        {error}
-      </Alert>
+      <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>
     );
   }
+  return null;
+}
 
+// --- SavePlugin to expose editor instance ---
+function SavePlugin({ setEditor }: { setEditor: (editor: LexicalEditor) => void }) {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    setEditor(editor);
+  }, [editor, setEditor]);
   return null;
 }
 
@@ -296,96 +261,51 @@ const DocumentEditor: React.FC = () => {
   const [document, setDocument] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
-  const [content, setContent] = useState('');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [crdtState, setCrdtState] = useState<any>(null);
+  const [editor, setEditor] = useState<LexicalEditor | null>(null);
 
-  // Load document data
-  useEffect(() => {
-    const loadDocument = async () => {
-      try {
-        if (!id) return;
-        const doc = await documentService.getDocument(parseInt(id));
-        setDocument(doc);
-        
-        // Handle content initialization
-        if (doc.content) {
-          if (typeof doc.content === 'string') {
-            setContent(doc.content);
-            setCrdtState({
-              text: doc.content,
-              characters: [],
-              version: doc.version
-            });
-          } else if (doc.content.text) {
-            setContent(doc.content.text);
-            setCrdtState(doc.content);
-          }
-        } else {
-          setContent('');
-          setCrdtState({
-            text: '',
-            characters: [],
-            version: doc.version
-          });
-        }
-      } catch (err) {
-        console.error('Error loading document:', err);
-        setError('Failed to load document');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadDocument();
-  }, [id]);
-
-  // Handle content changes
-  const handleContentChange = useCallback(async (editorState: EditorState, editor: LexicalEditor) => {
-    if (!id || !document) return;
-
+  // Auto-save handler
+  const handleAutoSave = async (content: any) => {
+    if (!id) return;
     setSaveStatus('saving');
     try {
-      const content = editorState.read(() => {
-        const root = $getRoot();
-        return root.getTextContent();
-      });
-
-      // Get user ID - try from context first, then localStorage as fallback
-      const userId = user?.id || parseInt(localStorage.getItem('user_id') || '0');
-
-      // Create CRDT characters for new content
-      const newCharacters = Array.from(content).map((char, index) => ({
-        value: char,
-        position: {
-          site_id: userId.toString(),
-          counter: index,
-          timestamp: Date.now()
-        },
-        deleted: false
-      }));
-
-      // Update content with new CRDT state
-      const updatedContent = {
-        text: content,
-        characters: newCharacters,
-        version: (crdtState?.version || 0) + 1
-      };
-
+      console.log('Auto-saving document with content:', content);
       const response = await documentService.updateDocument(parseInt(id), {
-        content: updatedContent
+        content: content,
       });
-      
-      // Update local state with response from server
-      if (response.content) {
-        setCrdtState(response.content);
-      }
+      console.log('Auto-save response:', response);
+      setDocument(response);
       setSaveStatus('saved');
+      // Reset status after 3 seconds
+      setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
-      console.error('Error saving document:', err);
+      console.error('Error auto-saving document:', err);
       setSaveStatus('error');
+      setError('Failed to auto-save document. Please try again.');
     }
-  }, [id, document, crdtState, user?.id]);
+  };
+
+  // Load document
+  const loadDocument = async () => {
+    if (!id) return;
+    try {
+      setLoading(true);
+      const doc = await documentService.getDocument(parseInt(id));
+      setDocument(doc);
+      setCrdtState(doc.content || { text: '', characters: [], version: 0 });
+      setError(null);
+    } catch (err) {
+      console.error('Error loading document:', err);
+      setError('Failed to load document');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDocument();
+  }, [id]);
 
   // Initialize editor with content
   const initialConfig = {
@@ -398,7 +318,7 @@ const DocumentEditor: React.FC = () => {
       const root = $getRoot();
       root.clear();
       const paragraph = $createParagraphNode();
-      paragraph.append($createTextNode(content));
+      paragraph.append($createTextNode(document?.content?.text || ''));
       root.append(paragraph);
     },
     theme: {
@@ -461,16 +381,21 @@ const DocumentEditor: React.FC = () => {
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             {saveStatus === 'saving' && (
-              <CircularProgress size={20} color="inherit" />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <CircularProgress size={20} color="inherit" />
+                <Typography variant="body2" color="inherit">
+                  Saving...
+                </Typography>
+              </Box>
             )}
             {saveStatus === 'saved' && (
-              <Typography variant="body2" color="inherit">
-                Saved
+              <Typography variant="body2" color="success.main" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                ✓ Saved
               </Typography>
             )}
             {saveStatus === 'error' && (
-              <Typography variant="body2" color="error">
-                Error saving
+              <Typography variant="body2" color="error" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                ✗ Save failed
               </Typography>
             )}
             <IconButton color="inherit">
@@ -483,6 +408,7 @@ const DocumentEditor: React.FC = () => {
       <Box sx={{ flexGrow: 1, overflow: 'hidden', p: 2 }}>
         <Paper sx={{ height: '100%', p: 2 }}>
           <LexicalComposer initialConfig={initialConfig}>
+            <SavePlugin setEditor={setEditor} />
             <div className="editor-container">
               <RichTextPlugin
                 contentEditable={<ContentEditable className="editor-input" />}
@@ -494,13 +420,13 @@ const DocumentEditor: React.FC = () => {
               <LinkPlugin />
               <ListPlugin />
               <MarkdownShortcutPlugin transformers={TRANSFORMERS} />
-              <OnChangePlugin onChange={handleContentChange} />
-              {user && (
+              {document && (
                 <CollaborationPlugin
                   documentId={parseInt(id!)}
-                  userId={user.id || parseInt(localStorage.getItem('user_id') || '0')}
+                  userId={user?.id || 0}
                   wsUrl={`ws://localhost:8000/api/v1/ws/${id}`}
                   initialCrdtState={crdtState}
+                  onSave={handleAutoSave}
                 />
               )}
             </div>
