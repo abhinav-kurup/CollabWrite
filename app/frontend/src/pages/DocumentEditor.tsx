@@ -128,22 +128,28 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
           if (!cursor || cursor.anchor == null) return null;
           const pos = caretPositions[parseInt(uid)];
           if (!pos) return null;
+          const username = cursor.username || `User ${uid}`;
           return (
             <div
               key={uid}
-              className="remote-cursor"
-              style={{
-                position: 'absolute',
-                left: pos.left,
-                top: pos.top,
-                width: 2,
-                height: 20,
-                background: getColor(Number(uid)),
-                zIndex: 10,
-                pointerEvents: 'none',
-                opacity: 0.8,
-              }}
-            />
+              className="remote-cursor-wrapper"
+              style={{ position: 'absolute', left: pos.left, top: pos.top, zIndex: 20 }}
+            >
+              <div
+                className="remote-cursor"
+                style={{
+                  width: 2,
+                  height: 20,
+                  background: getColor(Number(uid)),
+                  pointerEvents: 'auto',
+                  opacity: 0.8,
+                  position: 'relative',
+                  display: 'inline-block',
+                }}
+              >
+                <div className="remote-cursor-tooltip">{username}</div>
+              </div>
+            </div>
           );
         })}
       </>

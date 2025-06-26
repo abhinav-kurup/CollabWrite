@@ -27,6 +27,8 @@ class ConnectionManager:
         self.user_cursors: Dict[int, Dict[int, dict]] = {}
         # document_id -> document_state
         self.document_states: Dict[int, dict] = {}
+        
+        self.users : Dict[int,str] = {}
 
     async def connect(self, websocket: WebSocket, document_id: int, user_id: int):
         await websocket.accept()
@@ -37,6 +39,8 @@ class ConnectionManager:
             
             # Initialize document state from database
             db = SessionLocal()
+            # user = db.query(User).filter(User.id == user_id).first()
+            # if 
             try:
                 document = db.query(Document).filter(Document.id == document_id).first()
                 if document and document.content:
@@ -158,12 +162,16 @@ async def process_messages(websocket: WebSocket, document_id: int, user_id: int)
 
             if message_type == "cursor":
                 manager.update_cursor(document_id, user_id, message.get("data", {}))
+                username = manager.users.get(user_id,None)
+                cursor_data = message.get("data", {})
+                cursor_data["username"] = username
                 await manager.broadcast_message(
                     document_id,
                     {
                         "type": "cursor",
                         "user_id": user_id,
-                        "data": message.get("data", {})
+                        "username":username,
+                        "data": cursor_data
                     },
                     exclude_user=user_id
                 )
@@ -274,7 +282,7 @@ async def websocket_endpoint(
     
     # Connect to WebSocket
     await manager.connect(websocket, document_id, current_user.id)
-    
+    manager.users[current_user.id] = current_user.username
     try:
         # Start the periodic save task
         save_task = asyncio.create_task(periodic_save(document_id))
