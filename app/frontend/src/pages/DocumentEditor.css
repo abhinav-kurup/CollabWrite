@@ -76,4 +76,9 @@
   0% { opacity: 1; }
   50% { opacity: 0; }
   100% { opacity: 1; }
+}
+
+.remote-cursor {
+  transition: left 0.1s, top 0.1s;
+  border-radius: 1px;
 } 

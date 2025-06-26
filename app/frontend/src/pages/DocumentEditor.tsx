@@ -30,7 +30,7 @@ import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPlugin';
 import { TRANSFORMERS } from '@lexical/markdown';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { $getRoot, $createParagraphNode, $createTextNode, EditorState, LexicalEditor } from 'lexical';
+import { $getRoot, $createParagraphNode, $createTextNode, EditorState, LexicalEditor, $isRangeSelection } from 'lexical';
 import { HeadingNode, QuoteNode } from '@lexical/rich-text';
 import { ListItemNode, ListNode } from '@lexical/list';
 import { LinkNode } from '@lexical/link';
@@ -55,19 +55,119 @@ function CRDTPlugin({ onContentChange }: { onContentChange: (editorState: Editor
   return null;
 }
 
+// --- Custom hook for remote cursors ---
+function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCursors: { [userId: number]: any }) {
+  const [caretPositions, setCaretPositions] = useState<{ [userId: number]: { left: number, top: number } }>({});
+  const contentEditableRef = useRef<HTMLDivElement>(null);
+  const colors = [
+    '#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4dd0e1', '#ff8a65', '#a1887f', '#90a4ae', '#f06292'
+  ];
+  function getColor(uid: number) {
+    return colors[uid % colors.length];
+  }
+
+  // Calculate caret positions for remote cursors
+  useEffect(() => {
+    if (!editor) return;
+    const updateCaretPositions = () => {
+      editor.getEditorState().read(() => {
+        const positions: { [userId: number]: { left: number, top: number } } = {};
+        const dom = contentEditableRef.current;
+        if (!dom) return;
+        Object.entries(remoteCursors).forEach(([uid, cursor]) => {
+          if (parseInt(uid) === userId) return;
+          if (!cursor || typeof cursor.anchor !== 'number') return;
+          // Find all text nodes
+          const walker = document.createTreeWalker(dom, NodeFilter.SHOW_TEXT, null);
+          let total = 0;
+          let found = false;
+          let left = 0, top = 0;
+          while (walker.nextNode()) {
+            const node = walker.currentNode as Text;
+            const len = node.textContent?.length || 0;
+            if (total + len >= cursor.anchor) {
+              // Found the text node containing the anchor
+              const range = document.createRange();
+              range.setStart(node, cursor.anchor - total);
+              range.setEnd(node, cursor.anchor - total);
+              const rect = range.getBoundingClientRect();
+              const parentRect = dom.getBoundingClientRect();
+              left = rect.left - parentRect.left;
+              top = rect.top - parentRect.top;
+              found = true;
+              break;
+            }
+            total += len;
+          }
+          if (found) {
+            positions[parseInt(uid)] = { left, top };
+          }
+        });
+        setCaretPositions(positions);
+      });
+    };
+    updateCaretPositions();
+    // Recalculate on every remoteCursors change and every editor update
+    const removeListener = editor.registerUpdateListener(() => {
+      updateCaretPositions();
+    });
+    window.addEventListener('resize', updateCaretPositions);
+    return () => {
+      removeListener();
+      window.removeEventListener('resize', updateCaretPositions);
+    };
+  }, [editor, remoteCursors, userId]);
+
+  // Render overlays for remote cursors
+  const RemoteCursorsOverlay = () => {
+    if (!editor) return null;
+    return (
+      <>
+        {Object.entries(remoteCursors).map(([uid, cursor]) => {
+          if (parseInt(uid) === userId) return null;
+          if (!cursor || cursor.anchor == null) return null;
+          const pos = caretPositions[parseInt(uid)];
+          if (!pos) return null;
+          return (
+            <div
+              key={uid}
+              className="remote-cursor"
+              style={{
+                position: 'absolute',
+                left: pos.left,
+                top: pos.top,
+                width: 2,
+                height: 20,
+                background: getColor(Number(uid)),
+                zIndex: 10,
+                pointerEvents: 'none',
+                opacity: 0.8,
+              }}
+            />
+          );
+        })}
+      </>
+    );
+  };
+
+  return { RemoteCursorsOverlay, contentEditableRef };
+}
+
 // Custom plugin to handle WebSocket collaboration
-function CollaborationPlugin({ 
-  documentId, 
-  userId, 
+function CollaborationPlugin({
+  documentId,
+  userId,
   wsUrl,
   initialCrdtState,
-  onSave
-}: { 
+  onSave,
+  setRemoteCursors,
+}: {
   documentId: number;
   userId: number;
   wsUrl: string;
   initialCrdtState: any;
   onSave: (content: any) => Promise<void>;
+  setRemoteCursors: React.Dispatch<React.SetStateAction<{ [userId: number]: any }>>;
 }) {
   const [editor] = useLexicalComposerContext();
   const [ws, setWs] = useState<WebSocket | null>(null);
@@ -81,6 +181,12 @@ function CollaborationPlugin({
   const lastSelectionRef = useRef<any>(null);
   const suppressLocalChangeRef = useRef(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout>();
+  const colors = [
+    '#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4dd0e1', '#ff8a65', '#a1887f', '#90a4ae', '#f06292'
+  ];
+  function getColor(uid: number) {
+    return colors[uid % colors.length];
+  }
 
   const connectWebSocket = useCallback(() => {
     if (isConnectingRef.current || ws) return;
@@ -237,6 +343,59 @@ function CollaborationPlugin({
     };
   }, [ws, connected, editor, userId, documentId, onSave]);
 
+  // --- Send local cursor/selection to backend ---
+  useEffect(() => {
+    if (!ws || !connected) return;
+    const sendCursor = () => {
+      const selection = editor.getEditorState()._selection;
+      if (!$isRangeSelection(selection)) return;
+      const anchor = selection.anchor.offset;
+      const focus = selection.focus.offset;
+      ws.send(
+        JSON.stringify({
+          type: 'cursor',
+          user_id: userId,
+          document_id: documentId,
+          data: { anchor, focus },
+        })
+      );
+    };
+    // Listen for selection changes
+    const removeListener = editor.registerUpdateListener(({ editorState }) => {
+      editorState.read(() => {
+        sendCursor();
+      });
+    });
+    return () => {
+      removeListener();
+    };
+  }, [ws, connected, editor, userId, documentId]);
+
+  // --- Listen for remote cursor updates ---
+  useEffect(() => {
+    if (!ws) return;
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'cursor' && data.user_id !== userId) {
+          setRemoteCursors((prev) => ({ ...prev, [data.user_id]: data.data }));
+        }
+        if (data.type === 'init' && data.cursors) {
+          setRemoteCursors(data.cursors);
+        }
+        if (data.type === 'user_disconnected' && data.user_id) {
+          setRemoteCursors((prev) => {
+            const copy = { ...prev };
+            delete copy[data.user_id];
+            return copy;
+          });
+        }
+      } catch (e) {}
+    };
+    ws.addEventListener('message', handleMessage);
+    return () => ws.removeEventListener('message', handleMessage);
+  }, [ws, userId, setRemoteCursors]);
+
   if (error) {
     return (
       <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>
@@ -264,6 +423,7 @@ const DocumentEditor: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [crdtState, setCrdtState] = useState<any>(null);
   const [editor, setEditor] = useState<LexicalEditor | null>(null);
+  const [remoteCursors, setRemoteCursors] = useState<{ [userId: number]: any }>({});
 
   // Auto-save handler
   const handleAutoSave = async (content: any) => {
@@ -341,6 +501,8 @@ const DocumentEditor: React.FC = () => {
     ],
   };
 
+  const { RemoteCursorsOverlay, contentEditableRef } = useRemoteCursors(editor, user?.id || 0, remoteCursors);
+
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
@@ -409,9 +571,9 @@ const DocumentEditor: React.FC = () => {
         <Paper sx={{ height: '100%', p: 2 }}>
           <LexicalComposer initialConfig={initialConfig}>
             <SavePlugin setEditor={setEditor} />
-            <div className="editor-container">
+            <div className="editor-container" style={{ position: 'relative' }}>
               <RichTextPlugin
-                contentEditable={<ContentEditable className="editor-input" />}
+                contentEditable={<ContentEditable className="editor-input" ref={contentEditableRef} />}
                 placeholder={<div className="editor-placeholder">Start typing...</div>}
                 ErrorBoundary={EditorErrorBoundary}
               />
@@ -427,8 +589,10 @@ const DocumentEditor: React.FC = () => {
                   wsUrl={`ws://localhost:8000/api/v1/ws/${id}`}
                   initialCrdtState={crdtState}
                   onSave={handleAutoSave}
+                  setRemoteCursors={setRemoteCursors}
                 />
               )}
+              <RemoteCursorsOverlay />
             </div>
           </LexicalComposer>
         </Paper>
