@@ -69,13 +69,9 @@ async def get_current_user_ws(websocket: WebSocket) -> User:
     token = websocket.query_params.get("token")
     if not token:
         raise AuthenticationError("token not found")
-        
     try:
-        print("token")
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        print("payload",payload)
         username = payload.get("sub")
-            
         db = SessionLocal()
         try:
             user = db.query(User).filter(User.username == username).first()
@@ -84,13 +80,9 @@ async def get_current_user_ws(websocket: WebSocket) -> User:
             return user
         finally:
             db.close()
-            
     except ExpiredSignatureError as e:
-        print("Token has expired")
         raise JWTError("Token expired") from e
     except JWTClaimsError as e:
-        print("Invalid claims:", str(e))
         raise JWTError("Invalid claims") from e
     except JWTError as e:
-        print("General JWT error:", str(e))
         raise

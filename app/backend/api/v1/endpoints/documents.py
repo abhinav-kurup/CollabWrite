@@ -59,7 +59,6 @@ def read_documents(
             status_code=404,
             detail="Document not found"
         )
-    print("Documents: ",type(documents))
     return documents
 
 @router.get("/{document_id}", response_model=DocumentSchema)
@@ -107,43 +106,14 @@ def update_document(
     """
     Update document.
     """
-    print(f"[DEBUG] Updating document {document_id}")
-    print(f"[DEBUG] Update data received:", document_in.model_dump())
-    
     document = db.query(Document).filter(Document.id == document_id).first()
     if not document:
-        print(f"[ERROR] Document {document_id} not found")
         raise HTTPException(
             status_code=404,
             detail="Document not found"
         )
     
-    print(f"[DEBUG] Current document state:", {
-        "id": document.id,
-        "version": document.version,
-        "content_type": type(document.content).__name__ if document.content else None,
-        "has_content": bool(document.content),
-    })
-    
-    # Check if user has access to the document
-    is_collaborator = db.query(DocumentCollaborator).filter(
-        DocumentCollaborator.document_id == document_id,
-        DocumentCollaborator.user_id == current_user.id
-    ).first() is not None
-    
-    if (
-        document.owner_id != current_user.id and
-        not document.is_public and
-        not is_collaborator
-    ):
-        print(f"[ERROR] User {current_user.id} does not have permission to update document {document_id}")
-        raise HTTPException(
-            status_code=403,
-            detail="Not enough permissions"
-        )
-    
     update_data = document_in.model_dump(exclude_unset=True)
-    print(f"[DEBUG] Processed update data:", update_data)
     
     # Handle content update
     if 'content' in update_data:
@@ -155,30 +125,16 @@ def update_document(
                 'characters': content.get('characters', []),
                 'version': content.get('version', document.version)
             }
-            print(f"[DEBUG] Processed content update:", update_data['content'])
     
     try:
         for field, value in update_data.items():
             setattr(document, field, value)
-        
         document.version += 1
-        print(f"[DEBUG] Updated version to:", document.version)
-        
         db.add(document)
         db.commit()
         db.refresh(document)
-        
-        print(f"[DEBUG] Final document state:", {
-            "id": document.id,
-            "version": document.version,
-            "content_type": type(document.content).__name__ if document.content else None,
-            "has_content": bool(document.content),
-            "text_length": len(document.content.get('text', '')) if document.content else 0
-        })
-        
         return document
     except Exception as e:
-        print(f"[ERROR] Failed to update document: {str(e)}")
         db.rollback()
         raise HTTPException(
             status_code=500,
