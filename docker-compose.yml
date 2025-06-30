@@ -14,8 +14,10 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=collabwrite
+      - LANGUAGETOOL_URL=http://languagetool:8010
     depends_on:
       - db
+      - languagetool
 
   db:
     image: postgres:15
@@ -28,5 +30,16 @@ services:
     ports:
       - "5432:5432"
 
+  languagetool:
+    image: silviof/docker-languagetool:6.3
+    ports:
+      - "8081:8010"
+    environment:
+      - LANGTOOL_OPTS=-Xmx2g
+    volumes:
+      - languagetool_data:/languagetool
+    restart: unless-stopped
+
 volumes:
-  postgres_data: 
+  postgres_data:
+  languagetool_data: 
