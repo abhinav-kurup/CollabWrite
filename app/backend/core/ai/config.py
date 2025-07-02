@@ -13,7 +13,7 @@ class AIServiceConfig(BaseSettings):
     """Configuration for AI services."""
     
     # LanguageTool Configuration
-    language_tool_url: str = "http://languagetool:8010"
+    language_tool_url: str = "http://localhost:8081"
     language_tool_timeout: int = 10
     
     # Hugging Face Models Configuration

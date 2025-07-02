@@ -10,6 +10,7 @@ import sys
 import os
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
+from app.backend.core.ai.config import ai_config
 
 # Add the backend directory to the Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app', 'backend'))
@@ -49,7 +50,9 @@ class SummaryResult:
 class MockGrammarService:
     """Mock grammar service for structure testing."""
     
-    def __init__(self, language_tool_url: str = "http://languagetool:8010"):
+    def __init__(self, language_tool_url: str = None):
+        if language_tool_url is None:
+            language_tool_url = ai_config.language_tool_url
         self.language_tool_url = language_tool_url
     
     async def check_text(self, text: str, language: str = "en-US") -> List[GrammarIssue]:

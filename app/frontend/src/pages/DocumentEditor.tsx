@@ -160,14 +160,14 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
 }
 
 // Custom plugin to handle WebSocket collaboration
-function CollaborationPlugin({
-  documentId,
-  userId,
+function CollaborationPlugin({ 
+  documentId, 
+  userId, 
   wsUrl,
   initialCrdtState,
   onSave,
   setRemoteCursors,
-}: {
+}: { 
   documentId: number;
   userId: number;
   wsUrl: string;

@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from fastapi import HTTPException
 import logging
+from .config import ai_config
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,15 @@ class GrammarIssue:
 class GrammarService:
     """Service for grammar and style checking using LanguageTool."""
     
-    def __init__(self, language_tool_url: str = "http://languagetool:8010"):
+    def __init__(self, language_tool_url: str = None):
         """
         Initialize the grammar service.
         
         Args:
             language_tool_url: URL of the LanguageTool service
         """
+        if language_tool_url is None:
+            language_tool_url = ai_config.language_tool_url
         self.language_tool_url = language_tool_url.rstrip('/')
         self.session: Optional[aiohttp.ClientSession] = None
     
@@ -77,11 +80,13 @@ class GrammarService:
             # Make request to LanguageTool
             async with session.post(
                 f"{self.language_tool_url}/v2/check",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=10)
+                data=payload,
+                timeout=aiohttp.ClientTimeout(total=20)
             ) as response:
                 if response.status != 200:
-                    logger.error(f"LanguageTool API error: {response.status}")
+                    error_text = await response.text()
+                    print("LanguageTool error response:", error_text)
+                    logger.error(f"LanguageTool API error: {response.status} - {error_text}")
                     raise HTTPException(
                         status_code=503,
                         detail="Grammar checking service is temporarily unavailable"
