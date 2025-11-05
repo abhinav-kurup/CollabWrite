@@ -856,26 +856,25 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
                   animation: isOnline ? 'cursor-blink 1s infinite' : 'none',
                   transition: 'opacity 0.3s ease'
                 }}
-              >
-                <div className="remote-cursor-tooltip">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <div 
-                      style={{ 
-                        width: 8, 
-                        height: 8, 
-                        borderRadius: '50%', 
-                        background: isOnline ? '#4caf50' : isAway ? '#ff9800' : '#9e9e9e',
-                        animation: isOnline ? 'pulse 2s infinite' : 'none'
-                      }} 
-                    />
-                    {userPresence.username}
-                  </div>
-                  {!isOnline && userPresence.lastSeen && (
-                    <div style={{ fontSize: '10px', opacity: 0.7, marginTop: '2px' }}>
-                      Last seen: {new Date(userPresence.lastSeen).toLocaleTimeString()}
-                    </div>
-                  )}
+              />
+              <div className="remote-cursor-tooltip">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <div 
+                    style={{ 
+                      width: 8, 
+                      height: 8, 
+                      borderRadius: '50%', 
+                      background: isOnline ? '#4caf50' : isAway ? '#ff9800' : '#9e9e9e',
+                      animation: isOnline ? 'pulse 2s infinite' : 'none'
+                    }} 
+                  />
+                  {userPresence.username}
                 </div>
+                {!isOnline && userPresence.lastSeen && (
+                  <div style={{ fontSize: '10px', opacity: 0.7, marginTop: '2px' }}>
+                    Last seen: {new Date(userPresence.lastSeen).toLocaleTimeString()}
+                  </div>
+                )}
               </div>
             </div>
           );

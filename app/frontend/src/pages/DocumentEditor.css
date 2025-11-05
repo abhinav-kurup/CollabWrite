@@ -88,10 +88,17 @@
   opacity: 0;
   transition: opacity 0.2s ease;
   pointer-events: auto;
+  will-change: opacity;
 }
 
-.remote-cursor:hover .remote-cursor-tooltip {
-  opacity: 1;
+.remote-cursor-wrapper:hover .remote-cursor {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+.remote-cursor-wrapper:hover .remote-cursor-tooltip {
+  opacity: 1 !important;
+  animation: none !important;
 }
 
 @keyframes cursor-blink {
