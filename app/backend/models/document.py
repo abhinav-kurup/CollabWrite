@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, JSON, event
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.backend.db.session import Base
+from db.session import Base
 
 class Document(Base):
     __tablename__ = "documents"

@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.backend.api import deps
-from app.backend.core.ai.service_manager import ai_service_manager
-from app.backend.models.user import User
-from app.backend.schemas.ai import AITextRequest, ParaphraseRequest, SummarizeRequest, AIResponse
+from api import deps
+from core.ai.service_manager import ai_service_manager
+from models.user import User
+from schemas.ai import AITextRequest, ParaphraseRequest, SummarizeRequest, AIResponse
 
 router = APIRouter()
 
@@ -21,7 +21,7 @@ async def check_grammar(
     Check grammar for the given text.
     """
     try:
-        result = await ai_service_manager.check_grammar(request.text, request.language)
+        result = await ai_service_manager.check_grammar(request.text, request.language or "en")
         return {"success": True, "data": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

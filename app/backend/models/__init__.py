@@ -1,4 +1,4 @@
-from app.backend.models.user import User
-from app.backend.models.document import Document, DocumentCollaborator
+from models.user import User
+from models.document import Document, DocumentCollaborator
 
 __all__ = ["User", "Document", "DocumentCollaborator"] 

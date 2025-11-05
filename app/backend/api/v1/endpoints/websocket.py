@@ -1,20 +1,17 @@
 from typing import Dict, Set
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.backend.api.deps import get_db, get_current_user_ws
-from app.backend.models.user import User
-from app.backend.models.document import Document, DocumentCollaborator
-from app.backend.core.crdt import CRDT, Character, Position
-from app.backend.core.broadcast import manager
-from app.backend.core.exceptions import AuthenticationError
+from api.deps import get_db, get_current_user_ws
+from models.user import User
+from models.document import Document, DocumentCollaborator
+from core.crdt import CRDT, Character, Position
+from core.broadcast import manager as broadcast_manager
+from core.exceptions import AuthenticationError
 from datetime import datetime
 import json
 import asyncio
 from jose import JWTError
-from ...deps import get_current_user_ws
-from ....models.document import Document
-from sqlalchemy.orm import Session
-from ....db.session import SessionLocal
+from db.session import SessionLocal
 
 router = APIRouter()
 
@@ -69,7 +66,7 @@ class ConnectionManager:
                 self.user_cursors.pop(document_id, None)
                 self.document_states.pop(document_id, None)
 
-    async def broadcast_message(self, document_id: int, message: dict, exclude_user: int = None):
+    async def broadcast_message(self, document_id: int, message: dict, exclude_user: int = 0):
         if document_id in self.active_connections:
             for user_id, connection in self.active_connections[document_id].items():
                 if user_id != exclude_user:  # Don't send back to the sender
@@ -93,9 +90,10 @@ class ConnectionManager:
     def get_document_state(self, document_id: int) -> dict:
         return self.document_states.get(document_id, {})
 
-manager = ConnectionManager()
+connection_manager = ConnectionManager()
 
 async def save_document_state(document_id: int, state: dict):
+    db = None
     try:
         db = SessionLocal()
         document = db.query(Document).filter(Document.id == document_id).first()
@@ -112,23 +110,25 @@ async def save_document_state(document_id: int, state: dict):
             db.refresh(document)
     except Exception as e:
         # Rollback on error
-        try:
-            db.rollback()
-        except:
-            pass
+        if db:
+            try:
+                db.rollback()
+            except:
+                pass
     finally:
-        db.close()
+        if db:
+            db.close()
 
 async def periodic_save(document_id: int, save_interval: int = 10):
     while True:
         try:
             await asyncio.sleep(save_interval)
-            state = manager.get_document_state(document_id)
+            state = connection_manager.get_document_state(document_id)
             if state:
                 await save_document_state(document_id, state)
         except asyncio.CancelledError:
             try:
-                state = manager.get_document_state(document_id)
+                state = connection_manager.get_document_state(document_id)
                 if state:
                     await save_document_state(document_id, state)
             except Exception as e:
@@ -143,11 +143,11 @@ async def process_messages(websocket: WebSocket, document_id: int, user_id: int)
             message = await websocket.receive_json()
             message_type = message.get("type")
             if message_type == "cursor":
-                manager.update_cursor(document_id, user_id, message.get("data", {}))
-                username = manager.users.get(user_id,None)
+                connection_manager.update_cursor(document_id, user_id, message.get("data", {}))
+                username = connection_manager.users.get(user_id,None)
                 cursor_data = message.get("data", {})
                 cursor_data["username"] = username
-                await manager.broadcast_message(
+                await connection_manager.broadcast_message(
                     document_id,
                     {
                         "type": "cursor",
@@ -161,14 +161,14 @@ async def process_messages(websocket: WebSocket, document_id: int, user_id: int)
                 content = message.get("content")
                 if content and isinstance(content, dict) and 'text' in content:
                     # Update in-memory state
-                    manager.update_document_state(document_id, content)
+                    connection_manager.update_document_state(document_id, content)
                     # Immediately save to database
                     try:
                         await save_document_state(document_id, content)
                     except Exception as e:
                         pass
                     # Broadcast to other users
-                    await manager.broadcast_message(
+                    await connection_manager.broadcast_message(
                         document_id,
                         {
                             "type": "update",
@@ -178,15 +178,15 @@ async def process_messages(websocket: WebSocket, document_id: int, user_id: int)
                         exclude_user=user_id
                     )
             elif message_type == "sync_request":
-                state = manager.get_document_state(document_id)
+                state = connection_manager.get_document_state(document_id)
                 if state:
                     await websocket.send_json({
                         "type": "sync_response",
                         "content": state
                     })
     except WebSocketDisconnect:
-        manager.disconnect(document_id, user_id)
-        await manager.broadcast_message(
+        connection_manager.disconnect(document_id, user_id)
+        await connection_manager.broadcast_message(
             document_id,
             {
                 "type": "user_disconnected",
@@ -194,7 +194,7 @@ async def process_messages(websocket: WebSocket, document_id: int, user_id: int)
             }
         )
     except Exception as e:
-        manager.disconnect(document_id, user_id)
+        connection_manager.disconnect(document_id, user_id)
 
 @router.websocket("/ws/{document_id}")
 async def websocket_endpoint(
@@ -238,8 +238,10 @@ async def websocket_endpoint(
                 crdt.insert(i, char)
     else:
         crdt = CRDT(site_id=str(current_user.id))
-    await manager.connect(websocket, document_id, current_user.id)
-    manager.users[current_user.id] = current_user.username
+    await connection_manager.connect(websocket, document_id, current_user.id)
+    connection_manager.users[current_user.id] = current_user.username
+    save_task = None
+    message_processor = None
     try:
         save_task = asyncio.create_task(periodic_save(document_id))
         message_processor = asyncio.create_task(
@@ -249,7 +251,7 @@ async def websocket_endpoint(
             "type": "init",
             "document_id": document_id,
             "state": crdt.to_dict(),
-            "cursors": manager.get_cursors(document_id),
+            "cursors": connection_manager.get_cursors(document_id),
             "timestamp": datetime.utcnow().isoformat()
         })
         await message_processor
@@ -270,7 +272,7 @@ async def websocket_endpoint(
                 await save_task
             except asyncio.CancelledError:
                 pass
-        manager.disconnect(document_id, current_user.id)
+        connection_manager.disconnect(document_id, current_user.id)
         try:
             await websocket.close()
         except RuntimeError:

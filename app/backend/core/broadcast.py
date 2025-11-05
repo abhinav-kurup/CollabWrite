@@ -3,7 +3,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from datetime import datetime
 import json
 import asyncio
-from app.backend.core.crdt import CRDT, Character
+from core.crdt import CRDT, Character
 
 class ConnectionManager:
     def __init__(self):

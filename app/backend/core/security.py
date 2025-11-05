@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from app.backend.core.config import settings
+from core.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -44,7 +44,7 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
     to_encode.update({"exp": expire, "type": "refresh"})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
-def verify_token(token: str) -> dict:
+def verify_token(token: str) -> Optional[dict]:
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         return payload

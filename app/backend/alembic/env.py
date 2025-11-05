@@ -11,9 +11,9 @@ from alembic import context
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
 # Import your models and settings
-from app.backend.core.config import settings
-from app.backend.db.session import Base
-from app.backend.models import *  # This will import all models from __init__.py
+from core.config import settings
+from db.session import Base
+from models import *  # This will import all models from __init__.py
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

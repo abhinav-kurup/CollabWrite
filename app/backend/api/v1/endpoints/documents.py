@@ -1,10 +1,10 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.backend.api.deps import get_db, get_current_user
-from app.backend.models.user import User
-from app.backend.models.document import Document, DocumentCollaborator
-from app.backend.schemas.document import (
+from api.deps import get_db, get_current_user
+from models.user import User
+from models.document import Document, DocumentCollaborator
+from schemas.document import (
     Document as DocumentSchema,
     DocumentCreate,
     DocumentUpdate,
