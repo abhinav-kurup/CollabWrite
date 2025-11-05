@@ -4,12 +4,12 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import jwt
 from jose.exceptions import JWTError, ExpiredSignatureError, JWTClaimsError
 from sqlalchemy.orm import Session
-from app.backend.core.config import settings
-from app.backend.core.security import verify_password
-from app.backend.db.session import SessionLocal
-from app.backend.models.user import User
-from app.backend.schemas.user import TokenData
-from app.backend.core.exceptions import AuthenticationError
+from core.config import settings
+from core.security import verify_password
+from db.session import SessionLocal
+from models.user import User
+from schemas.user import TokenData
+from core.exceptions import AuthenticationError
 from fastapi import WebSocket
 
 

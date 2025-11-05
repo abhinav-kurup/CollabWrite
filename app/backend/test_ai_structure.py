@@ -10,7 +10,7 @@ import sys
 import os
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-from app.backend.core.ai.config import ai_config
+from core.ai.config import ai_config
 
 # Add the backend directory to the Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app', 'backend'))

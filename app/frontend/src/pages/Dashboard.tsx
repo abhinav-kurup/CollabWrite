@@ -77,7 +77,7 @@ const Dashboard: React.FC = () => {
 
   const handleCreateDocument = async () => {
     try {
-      await documentService.createDocument(newDocTitle, isPublic);
+      await documentService.createDocument({ title: newDocTitle, is_public: isPublic });
       setOpenNewDoc(false);
       setNewDocTitle('');
       setIsPublic(false);
@@ -117,17 +117,14 @@ const Dashboard: React.FC = () => {
 
   const handleAddCollaborator = async () => {
     if (!selectedDoc || !collaboratorId) {
-      console.log('Missing selectedDoc or collaboratorId:', { selectedDoc, collaboratorId });
       return;
     }
 
     try {
-      console.log('Adding collaborator:', { documentId: selectedDoc.id, userId: parseInt(collaboratorId) });
       setCollaboratorError(null);
       const response = await documentService.addCollaborator(selectedDoc.id, parseInt(collaboratorId));
       setCollaborators(response);
       setCollaboratorId('');
-      console.log('Collaborator added successfully');
     } catch (error: any) {
       console.error('Error adding collaborator:', error);
       setCollaboratorError(error.response?.data?.detail || 'Failed to add collaborator');
@@ -268,11 +265,7 @@ const Dashboard: React.FC = () => {
             <TextField
               label="User ID"
               value={collaboratorId}
-              onChange={(e) => {
-                const value = e.target.value;
-                console.log('Setting collaborator ID to:', value);
-                setCollaboratorId(value);
-              }}
+              onChange={(e) => setCollaboratorId(e.target.value)}
               fullWidth
               sx={{ mb: 1 }}
               type="number"
@@ -282,10 +275,7 @@ const Dashboard: React.FC = () => {
             <Button
               variant="contained"
               startIcon={<PersonAddIcon />}
-              onClick={() => {
-                console.log('Add button clicked');
-                handleAddCollaborator();
-              }}
+              onClick={handleAddCollaborator}
               fullWidth
               sx={{ mt: 2 }}
             >
@@ -355,7 +345,6 @@ const Dashboard: React.FC = () => {
           <EditIcon sx={{ mr: 1 }} /> Edit
         </MenuItem>
         <MenuItem onClick={() => {
-          console.log('Opening collaborators dialog for document:', selectedDoc);
           handleMenuClose();
           if (selectedDoc) {
             setOpenCollaborators(true);

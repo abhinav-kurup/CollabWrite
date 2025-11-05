@@ -1,15 +1,16 @@
 import axios from 'axios';
+import { DISABLE_AI } from '../config';
 
-const API_URL = 'http://localhost:8000/api/v1';
-
+// Create axios instance with base configuration
 const api = axios.create({
-  baseURL: API_URL,
+  baseURL: 'http://localhost:8000/api/v1',
+  timeout: 30000, // 30 seconds timeout for AI requests
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Add a request interceptor to add the auth token to requests
+// Request interceptor to add auth token
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('access_token');
@@ -23,55 +24,28 @@ api.interceptors.request.use(
   }
 );
 
-// Add a response interceptor to handle token refresh
+// Response interceptor for error handling
 api.interceptors.response.use(
   (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-
-    // If the error is 401 and we haven't tried to refresh the token yet
-    if (error.response.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true;
-
-      try {
-        const refreshToken = localStorage.getItem('refresh_token');
-        if (!refreshToken) {
-          throw new Error('No refresh token available');
-        }
-
-        const response = await axios.post(`${API_URL}/auth/refresh`, {
-          refresh_token: refreshToken,
-        });
-
-        const { access_token, refresh_token, user_id } = response.data;
-        localStorage.setItem('access_token', access_token);
-        localStorage.setItem('refresh_token', refresh_token);
-        localStorage.setItem('user_id', user_id.toString());
-
-        // Update the original request with the new token
-        originalRequest.headers.Authorization = `Bearer ${access_token}`;
-        return api(originalRequest);
-      } catch (refreshError) {
-        // If refresh token fails, clear storage and redirect to login
-        localStorage.removeItem('access_token');
-        localStorage.removeItem('refresh_token');
-        localStorage.removeItem('user_id');
-        window.location.href = '/login';
-        return Promise.reject(refreshError);
-      }
+  (error) => {
+    if (error.response?.status === 401) {
+      // Token expired or invalid
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('user_id');
+      window.location.href = '/login';
     }
-
     return Promise.reject(error);
   }
 );
 
+// Auth service
 export const authService = {
   login: async (username: string, password: string) => {
-    // Create URLSearchParams for form data
     const formData = new URLSearchParams();
     formData.append('username', username);
     formData.append('password', password);
-
+    
     const response = await api.post('/auth/login', formData, {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -90,6 +64,7 @@ export const authService = {
   },
 };
 
+// Document service
 export const documentService = {
   getDocuments: async () => {
     const response = await api.get('/documents');
@@ -101,24 +76,14 @@ export const documentService = {
     return response.data;
   },
 
-  createDocument: async (title: string, isPublic: boolean = false) => {
-    const response = await api.post('/documents', {
-      title,
-      is_public: isPublic,
-    });
+  createDocument: async (data: { title: string; is_public?: boolean; content?: any }) => {
+    const response = await api.post('/documents', data);
     return response.data;
   },
 
-  updateDocument: async (id: number, data: { title?: string; content?: any; is_public?: boolean }) => {
-    console.log(`Making PUT request to /documents/${id} with data:`, data);
-    try {
-      const response = await api.put(`/documents/${id}`, data);
-      console.log(`Update document response for id ${id}:`, response.data);
-      return response.data;
-    } catch (error) {
-      console.error(`Error updating document ${id}:`, error);
-      throw error;
-    }
+  updateDocument: async (id: number, data: { title?: string; content?: any }) => {
+    const response = await api.put(`/documents/${id}`, data);
+    return response.data;
   },
 
   deleteDocument: async (id: number) => {
@@ -126,19 +91,121 @@ export const documentService = {
     return response.data;
   },
 
+  // Collaborator management (re-added)
   getCollaborators: async (documentId: number) => {
     const response = await api.get(`/documents/${documentId}/collaborators`);
     return response.data;
   },
-
   addCollaborator: async (documentId: number, userId: number) => {
     const response = await api.post(`/documents/${documentId}/collaborators/${userId}`);
     return response.data;
   },
-
   removeCollaborator: async (documentId: number, userId: number) => {
     const response = await api.delete(`/documents/${documentId}/collaborators/${userId}`);
     return response.data;
+  },
+};
+
+// AI service with proper error handling and retry logic
+export const aiService = {
+  // Grammar checking with real-time suggestions
+  checkGrammar: async (text: string, language: string = 'en-US') => {
+    if (DISABLE_AI) {
+      throw new Error('AI features are disabled');
+    }
+    try {
+      const response = await api.post('/ai/grammar', {
+        text,
+        language,
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Grammar check failed:', error);
+      throw new Error(error.response?.data?.detail || 'Grammar check failed');
+    }
+  },
+
+  // Paraphrase text for style improvements
+  paraphraseText: async (text: string, numAlternatives: number = 3, context?: string) => {
+    if (DISABLE_AI) {
+      throw new Error('AI features are disabled');
+    }
+    try {
+      const response = await api.post('/ai/paraphrase', {
+        text,
+        num_alternatives: numAlternatives,
+        context,
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Paraphrase failed:', error);
+      throw new Error(error.response?.data?.detail || 'Paraphrasing failed');
+    }
+  },
+
+  // Summarize text with optional headline
+  summarizeText: async (text: string, includeHeadline: boolean = true) => {
+    if (DISABLE_AI) {
+      throw new Error('AI features are disabled');
+    }
+    try {
+      const response = await api.post('/ai/summarize', {
+        text,
+        include_headline: includeHeadline,
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Summarization failed:', error);
+      throw new Error(error.response?.data?.detail || 'Summarization failed');
+    }
+  },
+
+  // Get comprehensive AI suggestions
+  getSuggestions: async (text: string, language: string = 'en-US') => {
+    if (DISABLE_AI) {
+      throw new Error('AI features are disabled');
+    }
+    try {
+      const response = await api.post('/ai/suggest', {
+        text,
+        language,
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('AI suggestions failed:', error);
+      throw new Error(error.response?.data?.detail || 'AI suggestions failed');
+    }
+  },
+
+  // Check AI service health
+  checkHealth: async () => {
+    if (DISABLE_AI) {
+      return { success: false, data: { status: 'disabled' } } as any;
+    }
+    try {
+      const response = await api.get('/ai/health');
+      return response.data;
+    } catch (error: any) {
+      console.error('AI health check failed:', error);
+      throw new Error(error.response?.data?.detail || 'AI service unavailable');
+    }
+  },
+
+  // Generate headline for text
+  generateHeadline: async (text: string) => {
+    if (DISABLE_AI) {
+      throw new Error('AI features are disabled');
+    }
+    try {
+      const response = await api.post('/ai/summarize', {
+        text,
+        include_headline: true,
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Headline generation failed:', error);
+      throw new Error(error.response?.data?.detail || 'Headline generation failed');
+    }
   },
 };
 

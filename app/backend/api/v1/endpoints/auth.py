@@ -3,11 +3,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from app.backend.api.deps import get_db, authenticate_user
-from app.backend.core.config import settings
-from app.backend.core.security import create_tokens, verify_token, get_password_hash
-from app.backend.models.user import User
-from app.backend.schemas.user import UserCreate, User as UserSchema, Token, TokenRefresh
+from api.deps import get_db, authenticate_user
+from core.config import settings
+from core.security import create_tokens, verify_token, get_password_hash
+from models.user import User
+from schemas.user import UserCreate, User as UserSchema, Token, TokenRefresh
 
 router = APIRouter()
 

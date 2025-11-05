@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.backend.api.v1.api import api_router
-from app.backend.core.config import settings
-from app.backend.db.session import Base, engine
+from api.v1.api import api_router
+from core.config import settings
+from db.session import Base, engine
 import logging
 
 # Configure logging
