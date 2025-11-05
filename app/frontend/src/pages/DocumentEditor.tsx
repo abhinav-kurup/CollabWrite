@@ -430,6 +430,7 @@ const DocumentEditor: React.FC = () => {
   const [crdtState, setCrdtState] = useState<any>(null);
   const [editor, setEditor] = useState<LexicalEditor | null>(null);
   const [remoteCursors, setRemoteCursors] = useState<{ [userId: number]: any }>({});
+  const [onlineUsersCount, setOnlineUsersCount] = useState(1); // Start with 1 for the current user
 
   // Auto-save handler
   const handleAutoSave = async (content: any) => {
@@ -509,6 +510,14 @@ const DocumentEditor: React.FC = () => {
 
   const { RemoteCursorsOverlay, contentEditableRef } = useRemoteCursors(editor, user?.id || 0, remoteCursors);
 
+  // Update online users count when remoteCursors changes
+  useEffect(() => {
+    // Count remote users (excluding current user)
+    const remoteUsersCount = Object.keys(remoteCursors).filter(uid => parseInt(uid) !== (user?.id || 0)).length;
+    // Total users = current user + remote users
+    setOnlineUsersCount(1 + remoteUsersCount);
+  }, [remoteCursors, user?.id]);
+
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
@@ -566,6 +575,13 @@ const DocumentEditor: React.FC = () => {
                 ✗ Save failed
               </Typography>
             )}
+            {/* Online users indicator */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mr: 2 }}>
+              <PersonIcon fontSize="small" />
+              <Typography variant="body2" color="inherit">
+                {onlineUsersCount} {onlineUsersCount === 1 ? 'user' : 'users'} online
+              </Typography>
+            </Box>
             <IconButton color="inherit">
               <PersonIcon />
             </IconButton>
