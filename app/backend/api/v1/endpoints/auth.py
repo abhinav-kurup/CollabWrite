@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from api.deps import get_db, authenticate_user
+from api.deps import get_db, authenticate_user, get_current_user
 from core.config import settings
 from core.security import create_tokens, verify_token, get_password_hash
 from models.user import User
@@ -116,4 +116,13 @@ def refresh_token(
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user_id": user.id
-    } 
+    }
+
+@router.get("/me", response_model=UserSchema)
+async def get_me(
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """
+    Get current user.
+    """
+    return current_user 
