@@ -161,14 +161,27 @@ class GrammarService:
     
     def _issue_to_dict(self, issue: GrammarIssue) -> Dict[str, Any]:
         """Convert GrammarIssue to dictionary for JSON serialization."""
+        # Better classification of spelling vs grammar issues
+        rule_category = issue.rule_category.lower()
+        rule_id = issue.rule_id.lower()
+        
+        # Check if it's a spelling issue
+        is_spelling = (
+            'spelling' in rule_category or 
+            'typo' in rule_category or
+            'morfologik' in rule_id or
+            'speller' in rule_id or
+            'hunspell' in rule_id
+        )
+        
         return {
             "message": issue.message,
             "short_message": issue.short_message,
             "offset": issue.offset,
             "length": issue.length,
-            "replacements": issue.replacements,
+            "replacements": issue.replacements[:5],  # Limit to 5 replacements
             "rule_id": issue.rule_id,
-            "rule_category": issue.rule_category,
+            "rule_category": "Spelling" if is_spelling else issue.rule_category,
             "confidence": issue.confidence
         }
     
