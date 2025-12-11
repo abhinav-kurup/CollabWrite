@@ -56,7 +56,7 @@ const Dashboard: React.FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
   const [openCollaborators, setOpenCollaborators] = useState(false);
-  const [collaboratorId, setCollaboratorId] = useState('');
+  const [collaboratorUsername, setCollaboratorUsername] = useState<string>('');
   const [collaboratorError, setCollaboratorError] = useState<string | null>(null);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const { user, logout } = useAuth();
@@ -119,15 +119,15 @@ const Dashboard: React.FC = () => {
   };
 
   const handleAddCollaborator = async () => {
-    if (!selectedDoc || !collaboratorId) {
+    if (!selectedDoc || !collaboratorUsername.trim()) {
       return;
     }
 
     try {
       setCollaboratorError(null);
-      const response = await documentService.addCollaborator(selectedDoc.id, parseInt(collaboratorId));
+      const response = await documentService.addCollaborator(selectedDoc.id, collaboratorUsername.trim());
       setCollaborators(response);
-      setCollaboratorId('');
+      setCollaboratorUsername('');
     } catch (error: any) {
       console.error('Error adding collaborator:', error);
       setCollaboratorError(error.response?.data?.detail || 'Failed to add collaborator');
@@ -253,7 +253,7 @@ const Dashboard: React.FC = () => {
         open={openCollaborators} 
         onClose={() => {
           setOpenCollaborators(false);
-          setCollaboratorId('');
+          setCollaboratorUsername('');
           setCollaboratorError(null);
           setCollaborators([]);
         }}
@@ -263,40 +263,41 @@ const Dashboard: React.FC = () => {
         <DialogTitle>
           Manage Collaborators - {selectedDoc?.title}
         </DialogTitle>
-        <DialogContent>
-          <Box sx={{ mb: 2 }}>
-            <TextField
-              label="User ID"
-              value={collaboratorId}
-              onChange={(e) => setCollaboratorId(e.target.value)}
-              fullWidth
-              sx={{ mb: 1 }}
-              type="number"
-              inputProps={{ min: 1 }}
-              autoFocus
-            />
-            <Button
-              variant="contained"
-              startIcon={<PersonAddIcon />}
-              onClick={handleAddCollaborator}
-              fullWidth
-              sx={{ mt: 2 }}
-            >
+        <DialogContent sx={{ pt: 3 }}>
+          <TextField
+            label="Username"
+            value={collaboratorUsername}
+            onChange={(e) => setCollaboratorUsername(e.target.value)}
+            fullWidth
+            margin="normal"
+            autoFocus
+            placeholder="Enter username"
+            sx={{ mt: 0 }}
+          />
+          <Button
+            variant="contained"
+            startIcon={<PersonAddIcon />}
+            onClick={handleAddCollaborator}
+            fullWidth
+            sx={{ mt: 2, mb: 2 }}
+          >
               Add Collaborator
             </Button>
-            {collaboratorError && (
-              <Alert severity="error" sx={{ mt: 1 }}>
-                {collaboratorError}
-              </Alert>
-            )}
-          </Box>
-          <Typography variant="subtitle1" sx={{ mb: 1 }}>
+          {collaboratorError && (
+            <Alert severity="error" sx={{ mt: 1, mb: 2 }}>
+              {collaboratorError}
+            </Alert>
+          )}
+          <Typography variant="subtitle1" sx={{ mb: 1, mt: 3 }}>
             Current Collaborators:
           </Typography>
-          <List>
+          <List sx={{ maxHeight: 300, overflow: 'auto' }}>
             {collaborators.length > 0 ? (
               collaborators.map((collaborator) => (
-                <ListItem key={collaborator.user_id}>
+                <ListItem 
+                  key={collaborator.user_id}
+                  sx={{ py: 1 }}
+                >
                   <ListItemText 
                     primary={collaborator.username}
                     secondary={collaborator.email}
@@ -323,7 +324,7 @@ const Dashboard: React.FC = () => {
           <Button 
             onClick={() => {
               setOpenCollaborators(false);
-              setCollaboratorId('');
+              setCollaboratorUsername('');
               setCollaboratorError(null);
               setCollaborators([]);
             }}
