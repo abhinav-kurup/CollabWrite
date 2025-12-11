@@ -103,9 +103,20 @@ async def get_ai_suggestions(
 async def ai_health_check():
     """
     Check the health status of all AI services.
+    Returns 503 if any service is unhealthy.
     """
     try:
         health_status = await ai_service_manager.get_health_status()
+        
+        # Return 503 Service Unavailable if any service is unhealthy
+        if health_status.get("status") in ["degraded", "error", "not_initialized"]:
+            raise HTTPException(
+                status_code=503,
+                detail={"success": False, "data": health_status}
+            )
+        
         return {"success": True, "data": health_status}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}") 
