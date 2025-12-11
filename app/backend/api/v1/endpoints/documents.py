@@ -214,22 +214,17 @@ def get_document_collaborators(
         ) for c in collaborators
     ]
 
-@router.post("/{document_id}/collaborators/{user_id}", response_model=List[CollaboratorResponse])
+@router.post("/{document_id}/collaborators/{username}", response_model=List[CollaboratorResponse])
 def add_collaborator(
     *,
     db: Session = Depends(get_db),
     document_id: int,
-    user_id: int,
+    username: str,
     current_user: User = Depends(get_current_user)
 ) -> List[CollaboratorResponse]:
     """
-    Add a collaborator to the document.
+    Add a collaborator to the document by username.
     """
-    if current_user.id == user_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Owner can not be collaborator"
-        )
     document = db.query(Document).filter(Document.id == document_id).first()
     if not document:
         raise HTTPException(
@@ -242,18 +237,25 @@ def add_collaborator(
             detail="Not enough permissions"
         )
     
-    # Check if user exists
-    user = db.query(User).filter(User.id == user_id).first()
+    # Check if user exists by username
+    user = db.query(User).filter(User.username == username).first()
     if not user:
         raise HTTPException(
             status_code=404,
             detail="User not found"
         )
     
+    # Check if trying to add self as collaborator
+    if current_user.id == user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Owner can not be collaborator"
+        )
+    
     # Check if already a collaborator
     existing_collaborator = db.query(DocumentCollaborator).filter(
         DocumentCollaborator.document_id == document_id,
-        DocumentCollaborator.user_id == user_id
+        DocumentCollaborator.user_id == user.id
     ).first()
     
     if existing_collaborator:
@@ -265,7 +267,7 @@ def add_collaborator(
     # Add collaborator
     collaborator = DocumentCollaborator(
         document_id=document_id,
-        user_id=user_id
+        user_id=user.id
     )
     db.add(collaborator)
     try:
