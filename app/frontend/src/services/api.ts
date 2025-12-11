@@ -62,12 +62,17 @@ export const authService = {
     });
     return response.data;
   },
+
+  getCurrentUser: async () => {
+    const response = await api.get('/auth/me');
+    return response.data;
+  },
 };
 
 // Document service
 export const documentService = {
   getDocuments: async () => {
-    const response = await api.get('/documents');
+    const response = await api.get('/documents/');
     return response.data;
   },
 
@@ -77,7 +82,7 @@ export const documentService = {
   },
 
   createDocument: async (data: { title: string; is_public?: boolean; content?: any }) => {
-    const response = await api.post('/documents', data);
+    const response = await api.post('/documents/', data);
     return response.data;
   },
 

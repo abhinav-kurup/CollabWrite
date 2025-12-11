@@ -47,7 +47,6 @@ import {
   AutoAwesome as AIIcon,
   Lightbulb as SuggestionIcon,
   Refresh as RefreshIcon,
-  Settings as SettingsIcon,
   MoreVert as MoreVertIcon,
   Clear as ClearIcon,
 } from '@mui/icons-material';
@@ -143,6 +142,7 @@ interface AIState {
   lastCheckedText: string;
   error: string | null;
   healthStatus: 'healthy' | 'unhealthy' | 'unknown';
+  appliedSuggestions: Set<string>; // Track applied suggestions to avoid re-suggesting
 }
 
 // AI Integration Plugin - Google Docs Style
@@ -158,6 +158,105 @@ function AIIntegrationPlugin({
   const [editor] = useLexicalComposerContext();
   const [currentText, setCurrentText] = useState('');
 
+  // Helper function to create unique suggestion key (based on text only, not position)
+  const getSuggestionKey = useCallback((text: string): string => {
+    // Use only the text to track, not position (position changes as user edits)
+    return text.toLowerCase().trim();
+  }, []);
+
+  // Helper function to extract current sentence at cursor position
+  const getCurrentSentence = useCallback((text: string, cursorOffset: number): { sentence: string, start: number, end: number } => {
+    // Sentence delimiters
+    const sentenceEnd = /[.!?]\s+|\n\n/g;
+    
+    // Find sentence boundaries
+    let start = 0;
+    let end = text.length;
+    
+    // Find start of current sentence (look backward from cursor)
+    for (let i = cursorOffset - 1; i >= 0; i--) {
+      const char = text[i];
+      if (char === '.' || char === '!' || char === '?') {
+        // Check if followed by space or newline
+        if (i + 1 < text.length && /\s/.test(text[i + 1])) {
+          start = i + 2; // Start after delimiter and space
+          break;
+        }
+      } else if (char === '\n' && i > 0 && text[i - 1] === '\n') {
+        start = i + 1;
+        break;
+      }
+    }
+    
+    // Find end of current sentence (look forward from cursor)
+    for (let i = cursorOffset; i < text.length; i++) {
+      const char = text[i];
+      if (char === '.' || char === '!' || char === '?') {
+        // Check if followed by space or end of text
+        if (i + 1 >= text.length || /\s/.test(text[i + 1])) {
+          end = i + 1;
+          break;
+        }
+      } else if (char === '\n' && i + 1 < text.length && text[i + 1] === '\n') {
+        end = i;
+        break;
+      }
+    }
+    
+    return {
+      sentence: text.substring(start, end).trim(),
+      start,
+      end
+    };
+  }, []);
+  // Helper function to rank replacements by relevance
+  const rankReplacements = useCallback((original: string, replacements: string[]): string[] => {
+    if (replacements.length === 0) return [];
+    
+    // Calculate Levenshtein distance (edit distance)
+    const levenshtein = (a: string, b: string): number => {
+      const matrix: number[][] = [];
+      for (let i = 0; i <= b.length; i++) {
+        matrix[i] = [i];
+      }
+      for (let j = 0; j <= a.length; j++) {
+        matrix[0][j] = j;
+      }
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          if (b.charAt(i - 1) === a.charAt(j - 1)) {
+            matrix[i][j] = matrix[i - 1][j - 1];
+          } else {
+            matrix[i][j] = Math.min(
+              matrix[i - 1][j - 1] + 1, // substitution
+              matrix[i][j - 1] + 1,     // insertion
+              matrix[i - 1][j] + 1      // deletion
+            );
+          }
+        }
+      }
+      return matrix[b.length][a.length];
+    };
+
+    // Score each replacement
+    const scored = replacements.map((replacement, index) => {
+      const distance = levenshtein(original.toLowerCase(), replacement.toLowerCase());
+      const lengthDiff = Math.abs(original.length - replacement.length);
+      const casePreserved = original[0] === replacement[0] ? 0 : 1;
+      
+      // Lower score is better
+      // Priority: LanguageTool's order (index) > edit distance > length difference > case
+      const score = (index * 100) + (distance * 10) + lengthDiff + casePreserved;
+      
+      return { replacement, score };
+    });
+
+    // Sort by score (lowest first) and return just the replacements
+    return scored
+      .sort((a, b) => a.score - b.score)
+      .map(item => item.replacement);
+  }, []);
+
   // Debounced AI check with smart throttling and error handling
   const debouncedAICheck = useCallback(
     debounce(async (text: string) => {
@@ -168,7 +267,7 @@ function AIIntegrationPlugin({
       try {
         onAIStateChange({ isChecking: true, error: null });
         
-        // Get comprehensive AI suggestions
+        // Get comprehensive AI suggestions FOR ENTIRE TEXT
         const result = await aiService.getSuggestions(text);
         
         if (result.success && result.data) {
@@ -182,10 +281,31 @@ function AIIntegrationPlugin({
                 if (issue && typeof issue.offset === 'number' && typeof issue.length === 'number') {
                   const issueText = text.substring(issue.offset, issue.offset + issue.length);
                   if (issueText.length > 0) {
+                    // Create unique key for this suggestion (text only, no position)
+                    const suggestionKey = getSuggestionKey(issueText);
+                    
+                    // Skip if already applied/dismissed
+                    if (aiState.appliedSuggestions.has(suggestionKey)) {
+                      return; // Skip this suggestion
+                    }
+                    
+                    // Better classification: check rule_category for spelling
+                    const ruleCategory = (issue.rule_category || '').toLowerCase();
+                    const isSpelling = ruleCategory.includes('spelling') || 
+                                     ruleCategory.includes('typo') ||
+                                     (issue.rule_id || '').toLowerCase().includes('morfologik') ||
+                                     (issue.rule_id || '').toLowerCase().includes('speller');
+                    
+                    // Rank replacements by relevance
+                    const rankedReplacements = rankReplacements(
+                      issueText,
+                      Array.isArray(issue.replacements) ? issue.replacements.filter((r: string) => r && r.trim()) : []
+                    );
+                    
                     suggestions.push({
-                      type: (issue.rule_category || '').toLowerCase().includes('spelling') ? 'spelling' : 'grammar',
+                      type: isSpelling ? 'spelling' : 'grammar',
                       text: issueText,
-                      replacements: Array.isArray(issue.replacements) ? issue.replacements : [],
+                      replacements: rankedReplacements,
                       confidence: typeof issue.confidence === 'number' ? issue.confidence : 0.8,
                       offset: issue.offset,
                       length: issue.length
@@ -218,13 +338,14 @@ function AIIntegrationPlugin({
             });
           }
           
-          // Update state with validated suggestions
+          // Update state with validated suggestions - PRESERVE appliedSuggestions!
           onAIStateChange({
             grammarIssues: result.data.grammar?.issues || [],
             suggestions,
             isChecking: false,
             lastCheckedText: text,
             error: null
+            // appliedSuggestions is preserved automatically by spread in updateAIState
           });
         } else {
           // Handle API response without success
@@ -241,7 +362,7 @@ function AIIntegrationPlugin({
         });
       }
     }, 1500), // 1.5 seconds debounce for better UX
-    [enabled, aiState.lastCheckedText, onAIStateChange]
+    [enabled, aiState.lastCheckedText, aiState.appliedSuggestions, onAIStateChange, getSuggestionKey, rankReplacements]
   );
 
   useEffect(() => {
@@ -452,11 +573,13 @@ function InlineAISuggestions({
                   {Math.round(suggestion.confidence * 100)}%
                 </span>
               </div>
-              <div className="suggestion-text">{suggestion.text}</div>
+              <div className="suggestion-text">
+                <strong>Issue:</strong> {suggestion.text}
+              </div>
               {suggestion.replacements.length > 0 && (
                 <div className="suggestion-replacements">
                   <div className="replacements-label">Suggestions:</div>
-                  {suggestion.replacements.slice(0, 3).map((replacement, idx) => (
+                  {suggestion.replacements.slice(0, 5).map((replacement, idx) => (
                     <button
                       key={idx}
                       onClick={(e) => {
@@ -464,6 +587,7 @@ function InlineAISuggestions({
                         onApplySuggestion(suggestion, replacement);
                       }}
                       className="replacement-button"
+                      title={`Replace with: ${replacement}`}
                     >
                       {replacement}
                     </button>
@@ -766,17 +890,13 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
       setCaretPositions(positions);
     };
     
-    updateCaretPositions();
-    
-    // Recalculate on every remoteCursors change and every editor update
-    const removeListener = editor.registerUpdateListener(() => {
-      updateCaretPositions();
-    });
+    // Only recalculate when remoteCursors actually changes, with debouncing
+    const timeoutId = setTimeout(updateCaretPositions, 50);
     
     window.addEventListener('resize', updateCaretPositions);
     
     return () => {
-      removeListener();
+      clearTimeout(timeoutId);
       window.removeEventListener('resize', updateCaretPositions);
     };
   }, [editor, remoteCursors, userId]);
@@ -1215,34 +1335,24 @@ function CollaborationPlugin({
       );
     };
     
-    // Enhanced cursor sending with both debounced and immediate options
+    // Debounced cursor sending
     let timeoutId: NodeJS.Timeout;
     const debouncedSendCursor = () => {
       clearTimeout(timeoutId);
       timeoutId = setTimeout(sendCursor, 50); // Reduced debounce for more responsive cursors
     };
     
-    const immediateSendCursor = () => {
-      clearTimeout(timeoutId);
-      sendCursor();
-    };
-    
-    // Listen for both selection changes and editor updates
+    // Only listen for selection changes (NOT editor content updates)
     const handleSelectionChange = () => {
       debouncedSendCursor();
     };
     
     document.addEventListener('selectionchange', handleSelectionChange);
     
-    const removeListener = editor.registerUpdateListener(() => {
-      debouncedSendCursor();
-    });
-    
     // Send initial cursor position
-    setTimeout(immediateSendCursor, 100);
+    setTimeout(sendCursor, 100);
     
     return () => {
-      removeListener();
       document.removeEventListener('selectionchange', handleSelectionChange);
       clearTimeout(timeoutId);
     };
@@ -1521,10 +1631,10 @@ const DocumentEditor: React.FC = () => {
     isChecking: false,
     lastCheckedText: '',
     error: null,
-    healthStatus: 'unknown'
+    healthStatus: 'unknown',
+    appliedSuggestions: new Set<string>()
   });
   const [aiDialogOpen, setAiDialogOpen] = useState(false);
-  const [aiEnabled, setAiEnabled] = useState(!DISABLE_AI);
 
   // AI State Management
   const updateAIState = useCallback((updates: Partial<AIState>) => {
@@ -1585,31 +1695,49 @@ const DocumentEditor: React.FC = () => {
         
         targetNode.setTextContent(newText);
         
-        // Update AI state to remove the applied suggestion
-        setAIState(prev => ({
-          ...prev,
-          suggestions: prev.suggestions.filter(s => s !== suggestion),
-          grammarIssues: prev.grammarIssues.filter(issue => 
-            issue.offset !== suggestion.offset || issue.length !== suggestion.length
-          )
-        }));
+        // Track this suggestion as applied to prevent re-suggesting (text only, no position)
+        const suggestionKey = suggestion.text.toLowerCase().trim();
+        
+        // Update AI state to remove the applied suggestion and track it
+        setAIState(prev => {
+          const newAppliedSuggestions = new Set(prev.appliedSuggestions);
+          newAppliedSuggestions.add(suggestionKey);
+          
+          return {
+            ...prev,
+            suggestions: prev.suggestions.filter(s => s !== suggestion),
+            grammarIssues: prev.grammarIssues.filter(issue => 
+              issue.offset !== suggestion.offset || issue.length !== suggestion.length
+            ),
+            appliedSuggestions: newAppliedSuggestions
+          };
+        });
       }
     });
   }, [editor]);
 
   // Dismiss AI Suggestion
   const handleDismissSuggestion = useCallback((suggestion: AISuggestion) => {
-    setAIState(prev => ({
-      ...prev,
-      suggestions: prev.suggestions.filter(s => s !== suggestion),
-      grammarIssues: prev.grammarIssues.filter(issue => 
-        issue.offset !== suggestion.offset || issue.length !== suggestion.length
-      )
-    }));
+    // Track this suggestion as dismissed to prevent re-suggesting (text only, no position)
+    const suggestionKey = suggestion.text.toLowerCase().trim();
+    
+    setAIState(prev => {
+      const newAppliedSuggestions = new Set(prev.appliedSuggestions);
+      newAppliedSuggestions.add(suggestionKey); // Track dismissed suggestions too
+      
+      return {
+        ...prev,
+        suggestions: prev.suggestions.filter(s => s !== suggestion),
+        grammarIssues: prev.grammarIssues.filter(issue => 
+          issue.offset !== suggestion.offset || issue.length !== suggestion.length
+        ),
+        appliedSuggestions: newAppliedSuggestions
+      };
+    });
   }, []);
 
   // Clean up invalid suggestions when text changes
-  const cleanupInvalidSuggestions = useCallback(() => {
+  const cleanupInvalidSuggestions = useCallback((showNotification: boolean = false) => {
     if (!editor) return;
 
     editor.getEditorState().read(() => {
@@ -1633,8 +1761,8 @@ const DocumentEditor: React.FC = () => {
           const removedCount = prev.suggestions.length - validSuggestions.length;
           console.log('Cleaned up invalid suggestions:', removedCount);
           
-          // Show a brief notification
-          if (removedCount > 0) {
+          // Only show notification if explicitly requested (manual cleanup)
+          if (showNotification && removedCount > 0) {
             setError(`Cleaned up ${removedCount} invalid suggestion${removedCount > 1 ? 's' : ''}`);
             setTimeout(() => setError(null), 3000);
           }
@@ -1686,10 +1814,63 @@ const DocumentEditor: React.FC = () => {
               if (issue && typeof issue.offset === 'number' && typeof issue.length === 'number') {
                 const issueText = currentText.substring(issue.offset, issue.offset + issue.length);
                 if (issueText.length > 0) {
+                  // Create unique key for this suggestion (text only, no position)
+                  const suggestionKey = issueText.toLowerCase().trim();
+                  
+                  // Skip if already applied/dismissed
+                  if (aiState.appliedSuggestions.has(suggestionKey)) {
+                    return; // Skip this suggestion
+                  }
+                  
+                  // Better classification: check rule_category for spelling
+                  const ruleCategory = (issue.rule_category || '').toLowerCase();
+                  const isSpelling = ruleCategory.includes('spelling') || 
+                                   ruleCategory.includes('typo') ||
+                                   (issue.rule_id || '').toLowerCase().includes('morfologik') ||
+                                   (issue.rule_id || '').toLowerCase().includes('speller');
+                  
+                  // Helper function to rank replacements
+                  const rankReplacements = (original: string, replacements: string[]): string[] => {
+                    if (replacements.length === 0) return [];
+                    
+                    const levenshtein = (a: string, b: string): number => {
+                      const matrix: number[][] = [];
+                      for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+                      for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+                      for (let i = 1; i <= b.length; i++) {
+                        for (let j = 1; j <= a.length; j++) {
+                          if (b.charAt(i - 1) === a.charAt(j - 1)) {
+                            matrix[i][j] = matrix[i - 1][j - 1];
+                          } else {
+                            matrix[i][j] = Math.min(
+                              matrix[i - 1][j - 1] + 1,
+                              matrix[i][j - 1] + 1,
+                              matrix[i - 1][j] + 1
+                            );
+                          }
+                        }
+                      }
+                      return matrix[b.length][a.length];
+                    };
+                    
+                    const scored = replacements.map((replacement, index) => {
+                      const distance = levenshtein(original.toLowerCase(), replacement.toLowerCase());
+                      const lengthDiff = Math.abs(original.length - replacement.length);
+                      const casePreserved = original[0] === replacement[0] ? 0 : 1;
+                      const score = (index * 100) + (distance * 10) + lengthDiff + casePreserved;
+                      return { replacement, score };
+                    });
+                    
+                    return scored.sort((a, b) => a.score - b.score).map(item => item.replacement);
+                  };
+                  
                   suggestions.push({
-                    type: (issue.rule_category || '').toLowerCase().includes('spelling') ? 'spelling' : 'grammar',
+                    type: isSpelling ? 'spelling' : 'grammar',
                     text: issueText,
-                    replacements: Array.isArray(issue.replacements) ? issue.replacements : [],
+                    replacements: rankReplacements(
+                      issueText,
+                      Array.isArray(issue.replacements) ? issue.replacements.filter((r: string) => r && r.trim()) : []
+                    ),
                     confidence: typeof issue.confidence === 'number' ? issue.confidence : 0.8,
                     offset: issue.offset,
                     length: issue.length
@@ -1793,7 +1974,8 @@ const DocumentEditor: React.FC = () => {
   useEffect(() => {
     loadDocument();
     checkAIHealth();
-  }, [id, checkAIHealth]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]); // Only run when document ID changes
 
   // Clean up invalid suggestions when text changes significantly
   useEffect(() => {
@@ -1937,7 +2119,7 @@ const DocumentEditor: React.FC = () => {
                 <span>
                   <IconButton 
                     color="inherit" 
-                    onClick={cleanupInvalidSuggestions}
+                    onClick={() => cleanupInvalidSuggestions(true)}
                     size="small"
                     disabled={DISABLE_AI}
                   >
@@ -1946,19 +2128,6 @@ const DocumentEditor: React.FC = () => {
                 </span>
               </Tooltip>
             )}
-            
-            {/* AI Toggle */}
-            <Tooltip title={DISABLE_AI ? 'AI disabled' : `${aiEnabled ? 'Disable' : 'Enable'} AI`}>
-              <span>
-                <IconButton 
-                  color="inherit" 
-                  onClick={() => setAiEnabled(!aiEnabled)}
-                  disabled={DISABLE_AI}
-                >
-                  <SettingsIcon />
-                </IconButton>
-              </span>
-            </Tooltip>
             
             <IconButton color="inherit">
               <PersonIcon />
@@ -1987,7 +2156,7 @@ const DocumentEditor: React.FC = () => {
               <AIIntegrationPlugin
                 onAIStateChange={updateAIState}
                 aiState={aiState}
-                enabled={aiEnabled && !DISABLE_AI}
+                enabled={!DISABLE_AI}
               />
               
               {/* Inline AI Suggestions */}

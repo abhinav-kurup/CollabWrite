@@ -153,25 +153,24 @@
 .ai-suggestion-tooltip {
   position: absolute;
   top: 100%; /* Position below the underlined text */
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  transform: none;
   background: white;
   border: 1px solid #e0e0e0;
   border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   padding: 12px;
-  min-width: 250px;
-  max-width: 350px;
+  min-width: 280px;
+  max-width: 400px;
   z-index: 9999; /* Higher z-index to ensure visibility */
   opacity: 0;
   visibility: hidden;
-  margin-top: 8px; /* Space above the tooltip */
+  margin-top: 8px; /* Space below the marker */
   transition: all 0.2s ease;
   pointer-events: auto;
-  /* Enhanced tooltip styling */
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.95);
+  background: white;
+  white-space: normal;
+  word-wrap: break-word;
 }
 
 .ai-suggestion-marker:hover .ai-suggestion-tooltip,
@@ -222,10 +221,20 @@
 }
 
 .suggestion-text {
-  font-size: 14px;
+  font-size: 13px;
   color: #333;
   margin-bottom: 8px;
-  line-height: 1.4;
+  line-height: 1.5;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.suggestion-text strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #666;
+  font-size: 11px;
+  text-transform: uppercase;
 }
 
 .suggestion-replacements {
@@ -245,12 +254,15 @@
   background: #f8f9fa;
   border: 1px solid #e0e0e0;
   border-radius: 4px;
-  padding: 6px 8px;
-  margin: 2px 0;
-  font-size: 13px;
+  padding: 8px 12px;
+  margin: 4px 0;
+  font-size: 14px;
   text-align: left;
   cursor: pointer;
   transition: all 0.2s ease;
+  word-break: break-word;
+  white-space: normal;
+  line-height: 1.4;
 }
 
 .replacement-button:hover {
