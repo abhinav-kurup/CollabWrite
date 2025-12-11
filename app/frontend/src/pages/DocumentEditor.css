@@ -1,45 +1,40 @@
+/* Editor container */
 .editor-container {
   position: relative;
   height: 100%;
-  min-height: 500px;
-  border-radius: 4px;
-  background-color: #fff;
+  overflow: hidden;
 }
 
 .editor-input {
-  min-height: 500px;
-  padding: 15px;
-  position: relative;
-  tab-size: 1;
-  outline: 0;
-  caret-color: #444;
+  min-height: 100%;
+  padding: 20px;
   font-size: 16px;
-  line-height: 1.5;
-  word-wrap: break-word;
+  line-height: 1.6;
+  outline: none;
+  border: none;
+  background: transparent;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  
+  /* Note: Browser spell checking is disabled via HTML spellcheck="false" attribute */
 }
 
 .editor-placeholder {
   color: #999;
-  overflow: hidden;
   position: absolute;
-  text-overflow: ellipsis;
-  top: 15px;
-  left: 15px;
-  font-size: 16px;
-  user-select: none;
-  display: inline-block;
+  top: 20px;
+  left: 20px;
   pointer-events: none;
+  font-style: italic;
 }
 
+/* Editor text styling */
 .editor-paragraph {
-  margin: 0;
-  margin-bottom: 8px;
-  position: relative;
+  margin: 0 0 16px 0;
 }
 
 .editor-text {
-  white-space: pre-wrap;
-  word-break: break-word;
+  font-size: 16px;
+  line-height: 1.6;
 }
 
 .editor-text-bold {
@@ -54,48 +49,396 @@
   text-decoration: underline;
 }
 
+/* Error boundary */
 .editor-error-boundary {
-  border: 1px solid #ff0000;
-  padding: 8px;
-  margin: 8px;
+  padding: 20px;
+  border: 1px solid #f44336;
+  background-color: #ffebee;
+  color: #c62828;
   border-radius: 4px;
-  background-color: #fff;
-  color: #ff0000;
+  margin: 10px 0;
 }
 
-/* Cursor styles for collaboration */
-.collaborator-cursor {
+/* Remote cursors */
+.remote-cursor-wrapper {
   position: absolute;
-  width: 2px;
-  height: 18px;
-  background-color: #000;
-  animation: blink 1s infinite;
-}
-
-@keyframes blink {
-  0% { opacity: 1; }
-  50% { opacity: 0; }
-  100% { opacity: 1; }
+  pointer-events: none;
+  z-index: 20;
 }
 
 .remote-cursor {
-  transition: left 0.1s, top 0.1s;
-  border-radius: 1px;
+  width: 2px;
+  height: 20px;
+  background: #e57373;
+  animation: cursor-blink 1s infinite;
+  position: relative;
+  display: inline-block;
 }
 
-.remote-cursor-wrapper:hover .remote-cursor-tooltip {
-  display: block;
-}
 .remote-cursor-tooltip {
-  display: none;
   position: absolute;
-  top: -28px;
-  left: 8px;
-  background: #222;
-  color: #fff;
-  padding: 2px 8px;
+  top: -30px;
+  left: 0;
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 4px 8px;
   border-radius: 4px;
   font-size: 12px;
   white-space: nowrap;
-  z-index: 100;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: auto;
+  will-change: opacity;
+}
+
+.remote-cursor-wrapper:hover .remote-cursor {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+.remote-cursor-wrapper:hover .remote-cursor-tooltip {
+  opacity: 1 !important;
+  animation: none !important;
+}
+
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+
+/* AI Integration Styles - Google Docs Style */
+.inline-ai-suggestions {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.ai-suggestion-marker {
+  position: absolute;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: all 0.2s ease;
+  z-index: 10;
+  /* Professional underline styling */
+  border-radius: 2px;
+  box-shadow: 0 1px 0 currentColor;
+  /* Enhanced visibility */
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+/* Enhanced hover effects for better user experience */
+.ai-suggestion-marker:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+
+/* Active state for better interaction feedback */
+.ai-suggestion-marker:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.ai-suggestion-tooltip {
+  position: absolute;
+  top: 100%; /* Position below the underlined text */
+  left: 0;
+  transform: none;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  padding: 12px;
+  min-width: 280px;
+  max-width: 400px;
+  z-index: 9999; /* Higher z-index to ensure visibility */
+  opacity: 0;
+  visibility: hidden;
+  margin-top: 8px; /* Space below the marker */
+  transition: all 0.2s ease;
+  pointer-events: auto;
+  background: white;
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+.ai-suggestion-marker:hover .ai-suggestion-tooltip,
+.ai-suggestion-tooltip.show {
+  opacity: 1;
+  visibility: visible;
+  /* Ensure content is fully visible */
+  display: block;
+  overflow: visible;
+}
+
+.suggestion-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.suggestion-type {
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: white;
+}
+
+.suggestion-type.spelling {
+  background-color: #dc3545;
+}
+
+.suggestion-type.grammar {
+  background-color: #fd7e14;
+}
+
+.suggestion-type.style {
+  background-color: #007bff;
+}
+
+.suggestion-confidence {
+  font-size: 11px;
+  color: #666;
+  background: #f8f9fa;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.suggestion-text {
+  font-size: 13px;
+  color: #333;
+  margin-bottom: 8px;
+  line-height: 1.5;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.suggestion-text strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #666;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.suggestion-replacements {
+  margin-bottom: 8px;
+}
+
+.replacements-label {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.replacement-button {
+  display: block;
+  width: 100%;
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 4px 0;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  word-break: break-word;
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.replacement-button:hover {
+  background: #007bff;
+  color: white;
+  border-color: #007bff;
+}
+
+.suggestion-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.dismiss-button {
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.dismiss-button:hover {
+  background: #f8f9fa;
+  color: #333;
+}
+
+/* AI Dialog Styles */
+.ai-suggestions-dialog .MuiDialog-paper {
+  max-height: 80vh;
+}
+
+.ai-suggestions-dialog .MuiDialogContent-root {
+  padding: 0;
+}
+
+.ai-suggestions-dialog .MuiList-root {
+  padding: 0;
+}
+
+.ai-suggestions-dialog .MuiListItem-root {
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.ai-suggestions-dialog .MuiListItem-root:last-child {
+  border-bottom: none;
+}
+
+/* AI Status Indicator */
+.ai-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-status-chip {
+  font-size: 11px;
+  height: 24px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .editor-input {
+    padding: 15px;
+    font-size: 14px;
+  }
+  
+  .ai-suggestion-tooltip {
+    min-width: 200px;
+    max-width: 280px;
+    left: -50px;
+    /* Better mobile positioning - now below text */
+    top: calc(100% + 10px);
+  }
+  
+  .suggestion-replacements {
+    max-height: 120px;
+    overflow-y: auto;
+  }
+
+  /* Mobile-specific suggestion marker improvements */
+  .ai-suggestion-marker {
+    height: 3px; /* Thicker underlines for mobile */
+    border-radius: 3px;
+  }
+
+  /* Better touch targets for mobile */
+  .replacement-button {
+    padding: 8px 12px;
+    min-height: 44px; /* iOS recommended touch target size */
+  }
+
+  .dismiss-button {
+    padding: 8px 12px;
+    min-height: 44px;
+  }
+}
+
+/* Large screen optimizations */
+@media (min-width: 1200px) {
+  .ai-suggestion-tooltip {
+    min-width: 300px;
+    max-width: 400px;
+  }
+}
+
+/* Loading States */
+.ai-loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.ai-loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border: 2px solid #f3f3f3;
+  border-top: 2px solid #007bff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Accessibility */
+.ai-suggestion-marker:focus {
+  outline: 2px solid #007bff;
+  outline-offset: 2px;
+}
+
+.replacement-button:focus {
+  outline: 2px solid #007bff;
+  outline-offset: 1px;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .ai-suggestion-tooltip {
+    background: #2d3748;
+    border-color: #4a5568;
+    color: #e2e8f0;
+  }
+  
+  .suggestion-text {
+    color: #e2e8f0;
+  }
+  
+  .replacement-button {
+    background: #4a5568;
+    border-color: #718096;
+    color: #e2e8f0;
+  }
+  
+  .replacement-button:hover {
+    background: #007bff;
+    color: white;
+  }
+  
+  .dismiss-button {
+    color: #a0aec0;
+  }
+  
+  .dismiss-button:hover {
+    background: #4a5568;
+    color: #e2e8f0;
+  }
 } 

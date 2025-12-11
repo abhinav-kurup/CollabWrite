@@ -54,11 +54,7 @@ def read_documents(
         .limit(limit)
         .all()
     )
-    if not documents:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found"
-        )
+    # Return empty list instead of 404 when no documents found
     return documents
 
 @router.get("/{document_id}", response_model=DocumentSchema)
