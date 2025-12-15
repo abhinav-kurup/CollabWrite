@@ -392,7 +392,7 @@ function InlineAISuggestions({
   onDismissSuggestion: (suggestion: AISuggestion) => void;
 }) {
   const [editor] = useLexicalComposerContext();
-  const [markerPositions, setMarkerPositions] = useState<{[key: string]: {left: number, width: number, top: number}}>({});
+  const [markerPositions, setMarkerPositions] = useState<{[key: string]: {left: number, width: number, top: number, viewportLeft?: number, viewportTop?: number}}>({});
   const [isCalculating, setIsCalculating] = useState(false);
 
   // Professional positioning calculation using DOM measurements with text validation
@@ -400,7 +400,7 @@ function InlineAISuggestions({
     if (suggestions.length === 0 || isCalculating) return;
     
     setIsCalculating(true);
-    const positions: {[key: string]: {left: number, width: number, top: number}} = {};
+    const positions: {[key: string]: {left: number, width: number, top: number, viewportLeft?: number, viewportTop?: number}} = {};
     
     try {
       // Get the editor element
@@ -458,10 +458,21 @@ function InlineAISuggestions({
           tempElement.textContent = suggestion.text;
           const actualWidth = Math.min(tempElement.offsetWidth, suggestion.length * charWidth);
           
+          // Calculate container-relative position
+          const containerLeft = horizontalOffset * charWidth + paddingLeft;
+          const containerTop = lineNumber * lineHeight + paddingTop + lineHeight * 0.9;
+          
+          // Calculate viewport coordinates for fixed positioning tooltips
+          // editorElement is already available from the function scope
+          const editorRect = editorElement.getBoundingClientRect();
+          
           positions[key] = {
-            left: horizontalOffset * charWidth + paddingLeft,
+            left: containerLeft,
             width: actualWidth,
-            top: lineNumber * lineHeight + paddingTop + lineHeight * 0.9 // Position below text baseline
+            top: containerTop,
+            // Calculate viewport coordinates for fixed positioning (accounting for scroll)
+            viewportLeft: editorRect.left + containerLeft,
+            viewportTop: editorRect.top + containerTop
           };
         } catch (error) {
           // Skip invalid suggestions instead of using fallback
@@ -563,7 +574,14 @@ function InlineAISuggestions({
               e.currentTarget.style.boxShadow = '0 1px 0 currentColor';
             }}
           >
-            <div className="ai-suggestion-tooltip" data-tooltip-for={key}>
+            <div 
+              className="ai-suggestion-tooltip" 
+              data-tooltip-for={key}
+              style={{
+                top: position.viewportTop ? `${position.viewportTop + 20}px` : `${position.top + 20}px`,
+                left: position.viewportLeft ? `${position.viewportLeft}px` : `${position.left}px`
+              }}
+            >
               <div className="suggestion-header">
                 <span className={`suggestion-type ${suggestion.type}`}>
                   {suggestion.type === 'spelling' ? 'Spelling' : 
@@ -802,7 +820,7 @@ function AIStatusIndicator({
 
 // Enhanced remote cursors hook with proper presence management
 function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCursors: { [userId: number]: any }) {
-  const [caretPositions, setCaretPositions] = useState<{ [userId: number]: { left: number, top: number } }>({});
+  const [caretPositions, setCaretPositions] = useState<{ [userId: number]: { left: number, top: number, viewportLeft?: number, viewportTop?: number } }>({});
   const [presenceState, setPresenceState] = useState<PresenceState>({});
   const [onlineUsers, setOnlineUsers] = useState<UserPresence[]>([]);
   const contentEditableRef = useRef<HTMLDivElement>(null);
@@ -819,7 +837,7 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
     if (!editor) return;
     
     const updateCaretPositions = () => {
-      const positions: { [userId: number]: { left: number, top: number } } = {};
+      const positions: { [userId: number]: { left: number, top: number, viewportLeft?: number, viewportTop?: number } } = {};
       const dom = contentEditableRef.current;
       if (!dom) return;
       
@@ -830,14 +848,7 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
         if (!cursor || cursor.anchor == null) return;
         
         try {
-          // Enhanced approach: create temporary selection while preserving user selection
-          const selection = window.getSelection();
-          if (!selection) return;
-          
-          // Save current selection
-          const currentRange = selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
-          
-          // Create a new range at the remote cursor position
+          // Create a range at the remote cursor position without manipulating user's selection
           const range = document.createRange();
           const walker = document.createTreeWalker(dom, NodeFilter.SHOW_TEXT, null);
           let totalOffset = 0;
@@ -859,28 +870,33 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
           }
           
           if (found) {
-            // Temporarily set the selection to get accurate coordinates
-            selection.removeAllRanges();
-            selection.addRange(range);
-            
-            // Get the position with enhanced accuracy
+            // Get position using getBoundingClientRect - works without manipulating user's selection
+            // Range is already collapsed (start === end) so getBoundingClientRect gives accurate caret position
             const rect = range.getBoundingClientRect();
             const parentRect = dom.getBoundingClientRect();
             
-            positions[parseInt(uid)] = {
-              left: rect.left - parentRect.left,
-              top: rect.top - parentRect.top
+            // Calculate position relative to container for cursor
+            const containerLeft = rect.left - parentRect.left;
+            const containerTop = rect.top - parentRect.top;
+            
+            // Store viewport coordinates for fixed positioning tooltips
+            const newPos = {
+              left: containerLeft,
+              top: containerTop,
+              viewportLeft: rect.left,
+              viewportTop: rect.top
             };
             
-            // Restore original selection
-            if (currentRange) {
-              selection.removeAllRanges();
-              selection.addRange(currentRange);
+            const existingPos = caretPositions[parseInt(uid)];
+            // Only update if position changed significantly (more than 1px) to reduce flicker
+            if (!existingPos || 
+                Math.abs(existingPos.left - newPos.left) > 1 || 
+                Math.abs(existingPos.top - newPos.top) > 1) {
+              positions[parseInt(uid)] = newPos;
+            } else {
+              // Keep existing position to prevent unnecessary updates
+              positions[parseInt(uid)] = existingPos;
             }
-            
-            
-          } else {
-            
           }
         } catch (error) {
           console.error('Error calculating cursor position for user', uid, error);
@@ -890,14 +906,19 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
       setCaretPositions(positions);
     };
     
-    // Only recalculate when remoteCursors actually changes, with debouncing
-    const timeoutId = setTimeout(updateCaretPositions, 50);
+    // Debounce position updates to prevent excessive recalculations
+    let timeoutId: NodeJS.Timeout;
+    const debouncedUpdate = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(updateCaretPositions, 100); // Increased debounce
+    };
     
-    window.addEventListener('resize', updateCaretPositions);
+    debouncedUpdate();
+    window.addEventListener('resize', debouncedUpdate);
     
     return () => {
       clearTimeout(timeoutId);
-      window.removeEventListener('resize', updateCaretPositions);
+      window.removeEventListener('resize', debouncedUpdate);
     };
   }, [editor, remoteCursors, userId]);
 
@@ -974,10 +995,16 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
                   position: 'relative',
                   display: 'inline-block',
                   animation: isOnline ? 'cursor-blink 1s infinite' : 'none',
-                  transition: 'opacity 0.3s ease'
+                  transition: 'opacity 0.3s ease, left 0.1s ease, top 0.1s ease'
                 }}
               />
-              <div className="remote-cursor-tooltip">
+              <div 
+                className="remote-cursor-tooltip"
+                style={{
+                  top: pos.viewportTop ? `${pos.viewportTop - 30}px` : `${pos.top - 30}px`,
+                  left: pos.viewportLeft ? `${pos.viewportLeft}px` : `${pos.left}px`
+                }}
+              >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <div 
                     style={{ 
@@ -1335,11 +1362,36 @@ function CollaborationPlugin({
       );
     };
     
-    // Debounced cursor sending
+    // Debounced cursor sending - increased debounce to prevent excessive updates
     let timeoutId: NodeJS.Timeout;
+    let lastSentCursor: number | null = null;
     const debouncedSendCursor = () => {
       clearTimeout(timeoutId);
-      timeoutId = setTimeout(sendCursor, 50); // Reduced debounce for more responsive cursors
+      timeoutId = setTimeout(() => {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return;
+        const range = selection.getRangeAt(0);
+        const editorElement = editor.getRootElement();
+        if (!editorElement) return;
+        
+        // Calculate current cursor offset
+        let offset = 0;
+        const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null);
+        while (walker.nextNode()) {
+          const textNode = walker.currentNode as Text;
+          if (textNode === range.startContainer) {
+            offset += range.startOffset;
+            break;
+          } else {
+            offset += textNode.textContent?.length || 0;
+          }
+        }
+        
+        // Only send if cursor position actually changed
+        if (lastSentCursor === offset) return;
+        lastSentCursor = offset;
+        sendCursor();
+      }, 150); // Increased debounce to reduce update frequency
     };
     
     // Only listen for selection changes (NOT editor content updates)
@@ -1366,17 +1418,26 @@ function CollaborationPlugin({
         const data = JSON.parse(event.data);
         
         if (data.type === 'cursor' && data.user_id !== userId) {
-          
+          // Only update if cursor position actually changed to prevent unnecessary re-renders
           setRemoteCursors((prev) => {
-            const newState = { 
-              ...prev, 
-              [data.user_id]: {
-                ...data.data,
-                lastUpdated: Date.now()
-              }
+            const existingCursor = prev[data.user_id];
+            const newCursorData = {
+              ...data.data,
+              lastUpdated: Date.now()
             };
             
-            return newState;
+            // Skip update if cursor position hasn't changed
+            if (existingCursor && 
+                existingCursor.anchor === newCursorData.anchor &&
+                existingCursor.focus === newCursorData.focus &&
+                Date.now() - existingCursor.lastUpdated < 100) {
+              return prev; // Return previous state to prevent re-render
+            }
+            
+            return {
+              ...prev,
+              [data.user_id]: newCursorData
+            };
           });
         }
         

@@ -2,7 +2,9 @@
 .editor-container {
   position: relative;
   height: 100%;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Allow tooltips to escape overflow constraints */
 }
 
 .editor-input {
@@ -76,9 +78,7 @@
 }
 
 .remote-cursor-tooltip {
-  position: absolute;
-  top: -30px;
-  left: 0;
+  position: fixed;
   background: rgba(0, 0, 0, 0.8);
   color: white;
   padding: 4px 8px;
@@ -89,6 +89,8 @@
   transition: opacity 0.2s ease;
   pointer-events: auto;
   will-change: opacity;
+  z-index: 10000;
+  /* Use fixed positioning to escape overflow constraints */
 }
 
 .remote-cursor-wrapper:hover .remote-cursor {
@@ -151,9 +153,7 @@
 }
 
 .ai-suggestion-tooltip {
-  position: absolute;
-  top: 100%; /* Position below the underlined text */
-  left: 0;
+  position: fixed;
   transform: none;
   background: white;
   border: 1px solid #e0e0e0;
@@ -162,15 +162,15 @@
   padding: 12px;
   min-width: 280px;
   max-width: 400px;
-  z-index: 9999; /* Higher z-index to ensure visibility */
+  z-index: 10000; /* Higher z-index to ensure visibility */
   opacity: 0;
   visibility: hidden;
   margin-top: 8px; /* Space below the marker */
   transition: all 0.2s ease;
   pointer-events: auto;
-  background: white;
   white-space: normal;
   word-wrap: break-word;
+  /* Use fixed positioning to escape overflow constraints */
 }
 
 .ai-suggestion-marker:hover .ai-suggestion-tooltip,
