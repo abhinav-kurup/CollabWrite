@@ -272,7 +272,6 @@ const Dashboard: React.FC = () => {
             margin="normal"
             autoFocus
             placeholder="Enter username"
-            sx={{ mt: 0 }}
           />
           <Button
             variant="contained"
