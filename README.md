@@ -19,24 +19,18 @@ CollabWrite is a modern, real-time collaborative document editing platform desig
 | **Login** | **Create Document** |
 | <img src="assets/images/02_login.png" width="400" alt="Login Page"> | <img src="assets/images/04_create_doc.png" width="400" alt="Create Document Modal"> |
 
-### Collaborative Editor
-<img src="assets/images/05_editor.png" width="800" alt="Editor View with AI suggestions">
+### Real-time Collaboration
+<img src="assets/images/06_collab_cursor.png" width="800" alt="Real-time Collaboration">
 
-*Real-time editor with AI suggestions and user presence.*
+*Collaborate with team members utilizing real-time cursors and presence indicators.*
 
-| Collaboration | AI Suggestions |
+### Smart Grammar & Phrase Check
+| Style Enhancements | Spelling Corrections |
 |:---:|:---:|
-| <img src="assets/images/06_collab_cursor.png" width="400" alt="Real-time cursors"> | <img src="assets/images/07_spelling_suggestion.png" width="400" alt="Spelling and Style Suggestions"> |
-| **Real-time Cursors** | **Smart Grammar & Style Checks** |
+| <img src="assets/images/05_editor.png" width="400" alt="Style & Phrase Suggestions"> | <img src="assets/images/07_spelling_suggestion.png" width="400" alt="Spelling Corrections"> |
+| **A.I. Phrase Suggestions** | **Instant Spelling Fixes** |
 
 ## 🛠️ Tech Stack
-
-### Frontend
-*   **Framework**: React (TypeScript)
-*   **UI Library**: Material UI (MUI)
-*   **Editor**: Monaco Editor
-*   **Collaboration**: Yjs (CRDT for conflict-free editing), y-websocket
-*   **State Management**: React Hooks & Context
 
 ### Backend
 *   **Framework**: FastAPI (Python)
@@ -45,6 +39,13 @@ CollabWrite is a modern, real-time collaborative document editing platform desig
 *   **Real-time**: WebSockets
 *   **AI/ML**: Hugging Face Transformers, PyTorch, LanguageTool
 *   **Authentication**: JWT
+
+### Frontend
+*   **Framework**: React (TypeScript)
+*   **UI Library**: Material UI (MUI)
+*   **Editor**: Monaco Editor
+*   **Collaboration**: Yjs (CRDT for conflict-free editing), y-websocket
+*   **State Management**: React Hooks & Context
 
 ### Infrastructure
 *   **Containerization**: Docker, Docker Compose
