@@ -13,7 +13,7 @@ from db.session import SessionLocal
 
 router = APIRouter()
 
-# Enhanced connection manager with presence tracking
+# Enhanced connection manager with presence tracking 
 class ConnectionManager:
     def __init__(self):
         # document_id -> {user_id -> WebSocket}
@@ -71,12 +71,13 @@ class ConnectionManager:
         self.heartbeat_timestamps[document_id][user_id] = datetime.utcnow().timestamp()
         
         # Send initial state to the new connection
-        await websocket.send_json({
-            "type": "init",
-            "state": self.document_states[document_id],
-            "cursors": self.user_cursors[document_id],
-            "session_id": self.user_sessions[user_id]['connection_id']
-        })
+        # REMOVED DUPLICATE INIT: The websocket_endpoint sends the authoritative init message
+        # await websocket.send_json({
+        #     "type": "init",
+        #     "state": self.document_states[document_id],
+        #     "cursors": self.user_cursors[document_id],
+        #     "session_id": self.user_sessions[user_id]['connection_id']
+        # })
         
         # Notify other users about the new connection
         await self.broadcast_message(
@@ -140,7 +141,21 @@ class ConnectionManager:
             self.user_sessions[user_id]['last_activity'] = datetime.utcnow()
 
     def get_cursors(self, document_id: int) -> dict:
-        return self.user_cursors.get(document_id, {})
+        """Get cursors for all active users, synthesizing entries for users without cursor data"""
+        cursors = self.user_cursors.get(document_id, {}).copy()
+        
+        # Ensure all active users are included, even if they haven't sent a cursor update yet
+        if document_id in self.active_connections:
+            for user_id in self.active_connections[document_id]:
+                if user_id not in cursors and user_id in self.user_sessions:
+                    cursors[user_id] = {
+                        'anchor': 0, 
+                        'focus': 0,
+                        'username': self.user_sessions[user_id]['username'],
+                        'color': self.get_user_color(user_id),
+                        'lastUpdated': datetime.utcnow().timestamp()
+                    }
+        return cursors
 
     def update_document_state(self, document_id: int, state: dict):
         self.document_states[document_id] = state
@@ -387,7 +402,7 @@ async def websocket_endpoint(
         await websocket.send_json({
             "type": "init",
             "document_id": document_id,
-            "state": crdt.to_dict(),
+            "state": manager.get_document_state(document_id) or crdt.to_dict(),
             "cursors": manager.get_cursors(document_id),
             "timestamp": datetime.utcnow().isoformat()
         })
