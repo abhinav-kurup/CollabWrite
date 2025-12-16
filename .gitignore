@@ -26,7 +26,7 @@ node_modules/
 .windsurfrules
 .taskmaster
 
-samp.py
+# samp.py
 
 # OS specific
 .DS_Store

@@ -33,7 +33,7 @@ class ParaphraseResult:
 class ParaphraseService:
     """Service for text paraphrasing using Hugging Face models."""
     
-    def __init__(self, model_name: str = "tuner007/pegasus_paraphrase"):
+    def __init__(self, model_name: str = "humarin/chatgpt_paraphraser_on_T5_base"):
         """
         Initialize the paraphrase service.
         
@@ -105,25 +105,30 @@ class ParaphraseService:
             loop = asyncio.get_event_loop()
             
             def generate_paraphrases():
+                # For T5, we usually need a prefix
+                input_text = f"paraphrase: {text}"
+                
                 # Tokenize input
                 inputs = self.tokenizer(
-                    text,
+                    input_text,
                     return_tensors="pt",
                     max_length=max_length,
                     truncation=True,
                     padding=True
                 ).to(self.device)
                 
-                # Generate paraphrases
+                # Generate paraphrases with optimized parameters for variety
                 outputs = self.model.generate(
                     **inputs,
                     num_return_sequences=num_alternatives,
                     num_beams=5,
                     do_sample=True,
-                    temperature=0.7,
+                    temperature=0.90,     # Higher temperature for more variety
+                    top_k=50,
+                    top_p=0.95,          # Nucleus sampling
+                    repetition_penalty=1.2, # Penalize repetition
                     max_length=max_length,
-                    early_stopping=True,
-                    pad_token_id=self.tokenizer.eos_token_id
+                    early_stopping=True
                 )
                 
                 # Decode outputs
@@ -135,9 +140,9 @@ class ParaphraseService:
                     )
                     
                     # Calculate confidence (simplified)
-                    confidence = 0.8  # Placeholder - could be improved with model confidence
+                    confidence = 0.85  # Placeholder
                     
-                    # Calculate similarity (simplified)
+                    # Calculate similarity 
                     similarity = self._calculate_similarity(text, paraphrase_text)
                     
                     paraphrases.append(ParaphraseResult(
