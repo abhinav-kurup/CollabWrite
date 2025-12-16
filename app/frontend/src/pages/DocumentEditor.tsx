@@ -146,17 +146,35 @@ interface AIState {
 }
 
 // AI Integration Plugin - Google Docs Style
-function AIIntegrationPlugin({ 
+function AIIntegrationPlugin({
   onAIStateChange,
   aiState,
   enabled = true
-}: { 
+}: {
   onAIStateChange: (state: Partial<AIState>) => void;
   aiState: AIState;
   enabled: boolean;
 }) {
   const [editor] = useLexicalComposerContext();
   const [currentText, setCurrentText] = useState('');
+
+  // Cache state for incremental checking
+  const paragraphCache = useRef<Map<string, {
+    suggestions: AISuggestion[],
+    grammarIssues: GrammarIssue[],
+    timestamp: number
+  }>>(new Map());
+
+  const lastParagraphsRef = useRef<{ hash: string, text: string, offset: number }[]>([]);
+
+  // Simple string hash function (djb2)
+  const hashString = useCallback((str: string): string => {
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash) + str.charCodeAt(i);
+    }
+    return hash.toString();
+  }, []);
 
   // Helper function to create unique suggestion key (based on text only, not position)
   const getSuggestionKey = useCallback((text: string): string => {
@@ -168,11 +186,11 @@ function AIIntegrationPlugin({
   const getCurrentSentence = useCallback((text: string, cursorOffset: number): { sentence: string, start: number, end: number } => {
     // Sentence delimiters
     const sentenceEnd = /[.!?]\s+|\n\n/g;
-    
+
     // Find sentence boundaries
     let start = 0;
     let end = text.length;
-    
+
     // Find start of current sentence (look backward from cursor)
     for (let i = cursorOffset - 1; i >= 0; i--) {
       const char = text[i];
@@ -187,7 +205,7 @@ function AIIntegrationPlugin({
         break;
       }
     }
-    
+
     // Find end of current sentence (look forward from cursor)
     for (let i = cursorOffset; i < text.length; i++) {
       const char = text[i];
@@ -202,7 +220,7 @@ function AIIntegrationPlugin({
         break;
       }
     }
-    
+
     return {
       sentence: text.substring(start, end).trim(),
       start,
@@ -212,7 +230,7 @@ function AIIntegrationPlugin({
   // Helper function to rank replacements by relevance
   const rankReplacements = useCallback((original: string, replacements: string[]): string[] => {
     if (replacements.length === 0) return [];
-    
+
     // Calculate Levenshtein distance (edit distance)
     const levenshtein = (a: string, b: string): number => {
       const matrix: number[][] = [];
@@ -243,11 +261,11 @@ function AIIntegrationPlugin({
       const distance = levenshtein(original.toLowerCase(), replacement.toLowerCase());
       const lengthDiff = Math.abs(original.length - replacement.length);
       const casePreserved = original[0] === replacement[0] ? 0 : 1;
-      
+
       // Lower score is better
       // Priority: LanguageTool's order (index) > edit distance > length difference > case
       const score = (index * 100) + (distance * 10) + lengthDiff + casePreserved;
-      
+
       return { replacement, score };
     });
 
@@ -257,112 +275,151 @@ function AIIntegrationPlugin({
       .map(item => item.replacement);
   }, []);
 
-  // Debounced AI check with smart throttling and error handling
+  // Process API response for a single paragraph
+  const processParagraphResponse = useCallback((
+    text: string,
+    offset: number,
+    responseData: any
+  ): { suggestions: AISuggestion[], grammarIssues: GrammarIssue[] } => {
+    const suggestions: AISuggestion[] = [];
+    const grammarIssues: GrammarIssue[] = [];
+
+    // Grammar Issues
+    if (responseData.grammar && Array.isArray(responseData.grammar.issues)) {
+      responseData.grammar.issues.forEach((issue: any) => {
+        try {
+          if (issue && typeof issue.offset === 'number' && typeof issue.length === 'number') {
+            const issueText = text.substring(issue.offset, issue.offset + issue.length);
+            const absoluteIssue = { ...issue, offset: issue.offset };
+            grammarIssues.push(absoluteIssue);
+
+            if (issueText.length > 0) {
+              const ruleCategory = (issue.rule_category || '').toLowerCase();
+              const isSpelling = ruleCategory.includes('spelling') ||
+                ruleCategory.includes('typo') ||
+                (issue.rule_id || '').toLowerCase().includes('morfologik') ||
+                (issue.rule_id || '').toLowerCase().includes('speller');
+
+              suggestions.push({
+                type: isSpelling ? 'spelling' : 'grammar',
+                text: issueText,
+                replacements: rankReplacements(issueText, issue.replacements || []),
+                confidence: issue.confidence || 0.8,
+                offset: issue.offset,
+                length: issue.length
+              });
+            }
+          }
+        } catch (e) { }
+      });
+    }
+
+    // Style Improvements
+    if (responseData.style_improvements && Array.isArray(responseData.style_improvements.paraphrases)) {
+      responseData.style_improvements.paraphrases.forEach((paraphrase: any) => {
+        try {
+          if (paraphrase && typeof paraphrase.text === 'string' && paraphrase.text.trim()) {
+            suggestions.push({
+              type: 'style',
+              text: text.substring(0, Math.min(100, text.length)),
+              replacements: [paraphrase.text],
+              confidence: paraphrase.confidence || 0.7,
+              offset: 0,
+              length: Math.min(100, text.length)
+            });
+          }
+        } catch (e) { }
+      });
+    }
+
+    return { suggestions, grammarIssues };
+  }, [rankReplacements]);
+
+  // Debounced AI check with INCREMENTAL logic
   const debouncedAICheck = useCallback(
-    debounce(async (text: string) => {
-      if (!enabled || !text.trim() || text.length < 10 || text === aiState.lastCheckedText) {
-        return;
-      }
+    debounce(async (fullText: string) => {
+      if (!enabled || !fullText.trim() || fullText.length < 5) return;
 
       try {
         onAIStateChange({ isChecking: true, error: null });
-        
-        // Get comprehensive AI suggestions FOR ENTIRE TEXT
-        const result = await aiService.getSuggestions(text);
-        
-        if (result.success && result.data) {
-          const suggestions: AISuggestion[] = [];
-          
-          // Process grammar issues with proper error handling
-          if (result.data.grammar && Array.isArray(result.data.grammar.issues)) {
-            result.data.grammar.issues.forEach((issue: any) => {
-              try {
-                // Validate issue data structure
-                if (issue && typeof issue.offset === 'number' && typeof issue.length === 'number') {
-                  const issueText = text.substring(issue.offset, issue.offset + issue.length);
-                  if (issueText.length > 0) {
-                    // Create unique key for this suggestion (text only, no position)
-                    const suggestionKey = getSuggestionKey(issueText);
-                    
-                    // Skip if already applied/dismissed
-                    if (aiState.appliedSuggestions.has(suggestionKey)) {
-                      return; // Skip this suggestion
-                    }
-                    
-                    // Better classification: check rule_category for spelling
-                    const ruleCategory = (issue.rule_category || '').toLowerCase();
-                    const isSpelling = ruleCategory.includes('spelling') || 
-                                     ruleCategory.includes('typo') ||
-                                     (issue.rule_id || '').toLowerCase().includes('morfologik') ||
-                                     (issue.rule_id || '').toLowerCase().includes('speller');
-                    
-                    // Rank replacements by relevance
-                    const rankedReplacements = rankReplacements(
-                      issueText,
-                      Array.isArray(issue.replacements) ? issue.replacements.filter((r: string) => r && r.trim()) : []
-                    );
-                    
-                    suggestions.push({
-                      type: isSpelling ? 'spelling' : 'grammar',
-                      text: issueText,
-                      replacements: rankedReplacements,
-                      confidence: typeof issue.confidence === 'number' ? issue.confidence : 0.8,
-                      offset: issue.offset,
-                      length: issue.length
-                    });
-                  }
-                }
-              } catch (issueError) {
-                // ignore invalid issue entry
-              }
-            });
+
+        // 1. Split text into paragraphs
+        const paragraphs: { text: string, offset: number, hash: string }[] = [];
+        let currentOffset = 0;
+        const rawParagraphs = fullText.split(/(\n+)/);
+
+        for (const segment of rawParagraphs) {
+          if (segment.length > 0) {
+            if (segment.trim().length > 0) {
+              paragraphs.push({
+                text: segment,
+                offset: currentOffset,
+                hash: hashString(segment)
+              });
+            }
+            currentOffset += segment.length;
           }
-          
-          // Process style improvements with validation
-          if (result.data.style_improvements && Array.isArray(result.data.style_improvements.paraphrases)) {
-            result.data.style_improvements.paraphrases.forEach((paraphrase: any) => {
-              try {
-                if (paraphrase && typeof paraphrase.text === 'string' && paraphrase.text.trim()) {
-                  suggestions.push({
-                    type: 'style',
-                    text: text.substring(0, Math.min(100, text.length)), // Limit text length for style suggestions
-                    replacements: [paraphrase.text],
-                    confidence: typeof paraphrase.confidence === 'number' ? paraphrase.confidence : 0.7,
-                    offset: 0,
-                    length: Math.min(100, text.length)
-                  });
-                }
-              } catch (paraphraseError) {
-                // ignore invalid paraphrase entry
-              }
-            });
-          }
-          
-          // Update state with validated suggestions - PRESERVE appliedSuggestions!
-          onAIStateChange({
-            grammarIssues: result.data.grammar?.issues || [],
-            suggestions,
-            isChecking: false,
-            lastCheckedText: text,
-            error: null
-            // appliedSuggestions is preserved automatically by spread in updateAIState
-          });
-        } else {
-          // Handle API response without success
-          onAIStateChange({
-            isChecking: false,
-            error: 'AI service returned invalid response'
-          });
         }
-      } catch (error: any) {
-        console.error('AI check failed:', error);
-        onAIStateChange({
-          isChecking: false,
-          error: error.message || 'AI check failed'
+
+        lastParagraphsRef.current = paragraphs;
+
+        // 2. Diff: Identify changed paragraphs
+        const paragraphsToCheck = paragraphs.filter(p => !paragraphCache.current.has(p.hash));
+
+        // 3. Check new paragraphs
+        if (paragraphsToCheck.length > 0) {
+          console.log(`Checking ${paragraphsToCheck.length} changed paragraphs`);
+          const chunkSize = 3;
+          for (let i = 0; i < paragraphsToCheck.length; i += chunkSize) {
+            const batch = paragraphsToCheck.slice(i, i + chunkSize);
+            await Promise.all(batch.map(async (p) => {
+              if (p.text.length < 5) return;
+              try {
+                const result = await aiService.getSuggestions(p.text);
+                if (result.success && result.data) {
+                  const processed = processParagraphResponse(p.text, p.offset, result.data);
+                  paragraphCache.current.set(p.hash, { ...processed, timestamp: Date.now() });
+                }
+              } catch (e) { }
+            }));
+          }
+        }
+
+        // 4. Reconstruct results
+        const allSuggestions: AISuggestion[] = [];
+        const allIssues: GrammarIssue[] = [];
+
+        paragraphs.forEach(p => {
+          const cached = paragraphCache.current.get(p.hash);
+          if (cached) {
+            const mappedSuggestions = cached.suggestions.map(s => ({
+              ...s,
+              offset: s.offset + p.offset
+            })).filter(s => !aiState.appliedSuggestions.has(getSuggestionKey(s.text)));
+
+            const mappedIssues = cached.grammarIssues.map(i => ({
+              ...i,
+              offset: i.offset + p.offset
+            }));
+
+            allSuggestions.push(...mappedSuggestions);
+            allIssues.push(...mappedIssues);
+          }
         });
+
+        onAIStateChange({
+          grammarIssues: allIssues,
+          suggestions: allSuggestions,
+          isChecking: false,
+          lastCheckedText: fullText,
+          error: null
+        });
+
+      } catch (error: any) {
+        onAIStateChange({ isChecking: false, error: error.message });
       }
-    }, 1500), // 1.5 seconds debounce for better UX
-    [enabled, aiState.lastCheckedText, aiState.appliedSuggestions, onAIStateChange, getSuggestionKey, rankReplacements]
+    }, 2000),
+    [enabled, aiState.appliedSuggestions, onAIStateChange, getSuggestionKey, rankReplacements, hashString, processParagraphResponse] // Added deps
   );
 
   useEffect(() => {
@@ -382,248 +439,227 @@ function AIIntegrationPlugin({
 }
 
 // Inline AI Suggestions Overlay - Professional Grade Implementation
-function InlineAISuggestions({ 
-  suggestions, 
+function InlineAISuggestions({
+  suggestions,
   onApplySuggestion,
   onDismissSuggestion
-}: { 
+}: {
   suggestions: AISuggestion[];
   onApplySuggestion: (suggestion: AISuggestion, replacement: string) => void;
   onDismissSuggestion: (suggestion: AISuggestion) => void;
 }) {
   const [editor] = useLexicalComposerContext();
-  const [markerPositions, setMarkerPositions] = useState<{[key: string]: {left: number, width: number, top: number, viewportLeft?: number, viewportTop?: number}}>({});
-  const [isCalculating, setIsCalculating] = useState(false);
+  const [markerPositions, setMarkerPositions] = useState<{ [key: string]: { left: number, width: number, top: number, height: number, viewportLeft?: number, viewportTop?: number } }>({});
+  const [hoveredSuggestion, setHoveredSuggestion] = useState<string | null>(null);
 
-  // Professional positioning calculation using DOM measurements with text validation
-  const calculatePositions = useCallback(async () => {
-    if (suggestions.length === 0 || isCalculating) return;
-    
-    setIsCalculating(true);
-    const positions: {[key: string]: {left: number, width: number, top: number, viewportLeft?: number, viewportTop?: number}} = {};
-    
-    try {
-      // Get the editor element
-      const editorElement = document.querySelector('[contenteditable="true"]') as HTMLElement;
+  // Professional positioning calculation using standard DOM Range API
+  const calculatePositions = useCallback(() => {
+    editor.getEditorState().read(() => {
+      if (suggestions.length === 0) return;
+
+      const positions: { [key: string]: { left: number, width: number, top: number, height: number, viewportLeft?: number, viewportTop?: number } } = {};
+      const editorElement = editor.getRootElement();
+
       if (!editorElement) return;
 
-      // Get computed styles for accurate measurements
-      const computedStyle = window.getComputedStyle(editorElement);
-      const fontSize = parseInt(computedStyle.fontSize) || 16;
-      const lineHeight = parseInt(computedStyle.lineHeight) || fontSize * 1.6;
-      const paddingLeft = parseInt(computedStyle.paddingLeft) || 0;
-      const paddingTop = parseInt(computedStyle.paddingTop) || 0;
-      const fontFamily = computedStyle.fontFamily;
+      const editorRect = editorElement.getBoundingClientRect();
 
-      // Create a temporary element to measure actual character widths
-      const tempElement = document.createElement('span');
-      tempElement.style.position = 'absolute';
-      tempElement.style.visibility = 'hidden';
-      tempElement.style.whiteSpace = 'pre';
-      tempElement.style.font = `${fontSize}px ${fontFamily}`;
-      tempElement.style.lineHeight = `${lineHeight}px`;
-      document.body.appendChild(tempElement);
-
-      // Calculate character width using actual text measurement
-      tempElement.textContent = 'M'; // Use 'M' as reference character
-      const charWidth = tempElement.offsetWidth;
-      
-      // Calculate line width and characters per line
-      const editorWidth = editorElement.offsetWidth - paddingLeft * 2;
-      const charsPerLine = Math.floor(editorWidth / charWidth);
-
-      // Get current text content to validate suggestions
-      const currentText = editorElement.textContent || '';
-      
-      // Process each suggestion with text validation
       suggestions.forEach((suggestion, index) => {
         const key = `${suggestion.offset}-${suggestion.length}-${index}`;
-        
+
         try {
-          // Validate that the suggested text still exists at the specified offset
-          const textAtOffset = currentText.substring(suggestion.offset, suggestion.offset + suggestion.length);
-          
-          // If the text doesn't match or is empty, skip this suggestion
-          if (textAtOffset !== suggestion.text || textAtOffset.length === 0) {
-            return; // Skip this suggestion
+          const range = document.createRange();
+          const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT);
+
+          let currentOffset = 0;
+          let startNode: Node | null = null;
+          let startOffset = 0;
+          let endNode: Node | null = null;
+          let endOffset = 0;
+
+          while (walker.nextNode()) {
+            const node = walker.currentNode;
+            const nodeLength = node.textContent?.length || 0;
+
+            if (!startNode && currentOffset + nodeLength > suggestion.offset) {
+              startNode = node;
+              startOffset = suggestion.offset - currentOffset;
+            }
+
+            if (!endNode && currentOffset + nodeLength >= suggestion.offset + suggestion.length) {
+              endNode = node;
+              endOffset = (suggestion.offset + suggestion.length) - currentOffset;
+              break;
+            }
+
+            currentOffset += nodeLength;
           }
-          
-          // Calculate line number based on character offset
-          const lineNumber = Math.floor(suggestion.offset / charsPerLine);
-          
-          // Calculate horizontal position within the line
-          const horizontalOffset = suggestion.offset % charsPerLine;
-          
-          // Calculate actual width of the suggested text
-          tempElement.textContent = suggestion.text;
-          const actualWidth = Math.min(tempElement.offsetWidth, suggestion.length * charWidth);
-          
-          // Calculate container-relative position
-          const containerLeft = horizontalOffset * charWidth + paddingLeft;
-          const containerTop = lineNumber * lineHeight + paddingTop + lineHeight * 0.9;
-          
-          // Calculate viewport coordinates for fixed positioning tooltips
-          // editorElement is already available from the function scope
-          const editorRect = editorElement.getBoundingClientRect();
-          
-          positions[key] = {
-            left: containerLeft,
-            width: actualWidth,
-            top: containerTop,
-            // Calculate viewport coordinates for fixed positioning (accounting for scroll)
-            viewportLeft: editorRect.left + containerLeft,
-            viewportTop: editorRect.top + containerTop
-          };
-        } catch (error) {
-          // Skip invalid suggestions instead of using fallback
-          return;
-        }
+
+          if (startNode && endNode) {
+            range.setStart(startNode, startOffset);
+            range.setEnd(endNode, endOffset);
+
+            const rects = range.getClientRects();
+            if (rects.length > 0) {
+              const rect = rects[0];
+              positions[key] = {
+                left: rect.left - editorRect.left,
+                top: rect.top - editorRect.top + rect.height,
+                width: rect.width,
+                height: 2,
+                viewportLeft: rect.left,
+                viewportTop: rect.bottom
+              };
+            }
+          }
+        } catch (error) { }
       });
 
-      // Clean up temporary element
-      document.body.removeChild(tempElement);
-      
       setMarkerPositions(positions);
-    } catch (error) {
-      // Don't set fallback positions for invalid suggestions
-      setMarkerPositions({});
-    } finally {
-      setIsCalculating(false);
-    }
-  }, [suggestions, isCalculating]);
-
-  // Debounced position calculation to prevent excessive updates
-  useEffect(() => {
-    if (suggestions.length === 0) return;
-
-    const timeoutId = setTimeout(calculatePositions, 150);
-    return () => clearTimeout(timeoutId);
-  }, [suggestions, calculatePositions]);
-
-  // Listen for text changes to clean up invalid markers
-  useEffect(() => {
-    if (!editor) return;
-
-    const removeTextChangeListener = editor.registerUpdateListener(({ editorState }) => {
-      // Debounce the text change listener to avoid excessive updates
-      const timeoutId = setTimeout(() => {
-        calculatePositions();
-      }, 100);
-      
-      return () => clearTimeout(timeoutId);
     });
+  }, [suggestions, editor]);
 
-    return removeTextChangeListener;
-  }, [editor, calculatePositions]);
-
-  // Recalculate positions when window resizes
   useEffect(() => {
-    const handleResize = debounce(calculatePositions, 250);
+    if (suggestions.length === 0) {
+      setMarkerPositions({});
+      return;
+    }
+    calculatePositions();
+    const handleResize = debounce(calculatePositions, 100);
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [calculatePositions]);
+    window.addEventListener('scroll', handleResize, true);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('scroll', handleResize, true);
+    };
+  }, [suggestions.length, calculatePositions]);
 
   if (suggestions.length === 0) return null;
 
   return (
-    <div className="inline-ai-suggestions">
+    <div className="inline-ai-suggestions" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 10 }}>
       {suggestions.map((suggestion, index) => {
         const key = `${suggestion.offset}-${suggestion.length}-${index}`;
         const position = markerPositions[key];
-        
+
         if (!position) return null;
+        const isHovered = hoveredSuggestion === key;
 
         return (
-          <div
-            key={key}
-            className={`ai-suggestion-marker ${suggestion.type}`}
-            data-suggestion-key={key}
-            data-suggestion-type={suggestion.type}
-            data-suggestion-text={suggestion.text}
-            data-suggestion-replacements={JSON.stringify(suggestion.replacements)}
-            data-suggestion-confidence={suggestion.confidence}
-            style={{
-              position: 'absolute',
-              left: `${position.left}px`,
-              top: `${position.top}px`,
-              width: `${position.width}px`,
-              height: '2px',
-              backgroundColor: suggestion.type === 'spelling' ? '#dc3545' : 
-                             suggestion.type === 'grammar' ? '#fd7e14' : 
-                             '#007bff',
-              cursor: 'pointer',
-              zIndex: 10,
-              borderRadius: '1px',
-              transition: 'all 0.2s ease',
-            }}
-            onClick={() => {
-              // Show tooltip on click for better mobile support
-              const tooltip = document.querySelector(`[data-tooltip-for="${key}"]`);
-              if (tooltip) {
-                tooltip.classList.toggle('show');
-              }
-            }}
-            onMouseEnter={(e) => {
-              // Enhanced hover effect
-              e.currentTarget.style.transform = 'translateY(-1px)';
-              e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.3)';
-            }}
-            onMouseLeave={(e) => {
-              // Reset hover effect
-              e.currentTarget.style.transform = 'translateY(0)';
-              e.currentTarget.style.boxShadow = '0 1px 0 currentColor';
-            }}
-          >
-            <div 
-              className="ai-suggestion-tooltip" 
-              data-tooltip-for={key}
+          <div key={key}>
+            {/* Invisible hit area */}
+            <div
               style={{
-                top: position.viewportTop ? `${position.viewportTop + 20}px` : `${position.top + 20}px`,
-                left: position.viewportLeft ? `${position.viewportLeft}px` : `${position.left}px`
+                position: 'absolute',
+                left: `${position.left}px`,
+                top: `${position.top - 10}px`, // Extend hit area up
+                width: `${position.width}px`,
+                height: '20px', // Larger hit area
+                cursor: 'pointer',
+                pointerEvents: 'auto',
+                zIndex: 20
               }}
-            >
-              <div className="suggestion-header">
-                <span className={`suggestion-type ${suggestion.type}`}>
-                  {suggestion.type === 'spelling' ? 'Spelling' : 
-                   suggestion.type === 'grammar' ? 'Grammar' : 'Style'}
-                </span>
-                <span className="suggestion-confidence">
-                  {Math.round(suggestion.confidence * 100)}%
-                </span>
-              </div>
-              <div className="suggestion-text">
-                <strong>Issue:</strong> {suggestion.text}
-              </div>
-              {suggestion.replacements.length > 0 && (
-                <div className="suggestion-replacements">
-                  <div className="replacements-label">Suggestions:</div>
-                  {suggestion.replacements.slice(0, 5).map((replacement, idx) => (
+              onMouseEnter={() => setHoveredSuggestion(key)}
+              onMouseLeave={() => setHoveredSuggestion(null)}
+            />
+
+            {/* Marker */}
+            <div
+              className={`ai-suggestion-marker ${suggestion.type}`}
+              style={{
+                position: 'absolute',
+                left: `${position.left}px`,
+                top: `${position.top}px`,
+                width: `${position.width}px`,
+                height: '3px',
+                backgroundColor: suggestion.type === 'spelling' ? '#ef4444' :
+                  suggestion.type === 'grammar' ? '#f59e0b' :
+                    '#3b82f6',
+                opacity: 0.8,
+                transition: 'all 0.2s ease',
+                borderRadius: '2px'
+              }}
+            />
+
+            {/* Premium Dark Theme Tooltip */}
+            {isHovered && (
+              <div
+                style={{
+                  position: 'fixed',
+                  top: `${position.viewportTop ? position.viewportTop + 8 : 0}px`,
+                  left: `${position.viewportLeft || 0}px`,
+                  zIndex: 1000,
+                  backgroundColor: '#1e293b',
+                  color: '#f8fafc',
+                  boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.5)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  minWidth: '280px',
+                  maxWidth: '400px',
+                  border: '1px solid #334155',
+                  pointerEvents: 'auto',
+                  fontFamily: "'Inter', sans-serif"
+                }}
+                onMouseEnter={() => setHoveredSuggestion(key)}
+                onMouseLeave={() => setHoveredSuggestion(null)}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid #334155', paddingBottom: '8px' }}>
+                  <span style={{
+                    textTransform: 'uppercase',
+                    fontSize: '0.75rem',
+                    fontWeight: '700',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    backgroundColor: suggestion.type === 'spelling' ? 'rgba(239, 68, 68, 0.2)' : suggestion.type === 'grammar' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(59, 130, 246, 0.2)',
+                    color: suggestion.type === 'spelling' ? '#fca5a5' : suggestion.type === 'grammar' ? '#fcd34d' : '#93c5fd'
+                  }}>
+                    {suggestion.type}
+                  </span>
+                  <span style={{ fontSize: '0.75rem', color: '#94a3b8', backgroundColor: '#334155', padding: '2px 6px', borderRadius: '4px' }}>
+                    {(suggestion.confidence * 100).toFixed(0)}%
+                  </span>
+                </div>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <div style={{ fontSize: '0.925rem', color: '#e2e8f0', marginBottom: '8px', lineHeight: '1.5' }}>
+                    {suggestion.text}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', textTransform: 'uppercase', marginBottom: '4px' }}>Suggestions:</div>
+                  {suggestion.replacements.slice(0, 3).map((rep, i) => (
                     <button
-                      key={idx}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onApplySuggestion(suggestion, replacement);
+                      key={i}
+                      onClick={() => onApplySuggestion(suggestion, rep)}
+                      style={{
+                        textAlign: 'left',
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: '#fff',
+                        padding: '10px 12px',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '0.95rem',
+                        display: 'block',
+                        width: '100%'
                       }}
-                      className="replacement-button"
-                      title={`Replace with: ${replacement}`}
                     >
-                      {replacement}
+                      {rep}
                     </button>
                   ))}
                 </div>
-              )}
-              <div className="suggestion-actions">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDismissSuggestion(suggestion);
-                  }}
-                  className="dismiss-button"
-                >
-                  Ignore
-                </button>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px', borderTop: '1px solid #334155', paddingTop: '8px' }}>
+                  <button
+                    onClick={() => onDismissSuggestion(suggestion)}
+                    style={{ background: 'transparent', border: 'none', color: '#64748b', fontSize: '0.8rem', cursor: 'pointer' }}
+                  >
+                    Ignore
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         );
       })}
@@ -632,13 +668,13 @@ function InlineAISuggestions({
 }
 
 // AI Suggestions Dialog - Comprehensive View
-function AISuggestionsDialog({ 
-  open, 
-  onClose, 
+function AISuggestionsDialog({
+  open,
+  onClose,
   suggestions,
   onApplySuggestion,
   onDismissSuggestion
-}: { 
+}: {
   open: boolean;
   onClose: () => void;
   suggestions: AISuggestion[];
@@ -686,10 +722,10 @@ function AISuggestionsDialog({
           <AIIcon />
           AI Writing Suggestions
           {suggestions.length > 0 && (
-            <Chip 
-              label={suggestions.length} 
-              color="primary" 
-              size="small" 
+            <Chip
+              label={suggestions.length}
+              color="primary"
+              size="small"
             />
           )}
         </Box>
@@ -718,10 +754,10 @@ function AISuggestionsDialog({
                           primary={suggestion.text}
                           secondary={
                             <Box>
-                              <Chip 
-                                label={suggestion.type} 
+                              <Chip
+                                label={suggestion.type}
                                 color={getSuggestionColor(suggestion.type) as any}
-                                size="small" 
+                                size="small"
                                 sx={{ mr: 1 }}
                               />
                               <Typography variant="body2" color="text.secondary">
@@ -773,10 +809,10 @@ function AISuggestionsDialog({
 }
 
 // AI Status Indicator
-function AIStatusIndicator({ 
-  aiState, 
-  onRefresh 
-}: { 
+function AIStatusIndicator({
+  aiState,
+  onRefresh
+}: {
   aiState: AIState;
   onRefresh: () => void;
 }) {
@@ -827,7 +863,7 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
   const colors = [
     '#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4dd0e1', '#ff8a65', '#a1887f', '#90a4ae', '#f06292'
   ];
-  
+
   function getColor(uid: number) {
     return colors[uid % colors.length];
   }
@@ -835,29 +871,29 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
   // Enhanced cursor position calculation using DOM ranges
   useEffect(() => {
     if (!editor) return;
-    
+
     const updateCaretPositions = () => {
       const positions: { [userId: number]: { left: number, top: number, viewportLeft?: number, viewportTop?: number } } = {};
       const dom = contentEditableRef.current;
       if (!dom) return;
-      
-      
-      
+
+
+
       Object.entries(remoteCursors).forEach(([uid, cursor]) => {
         if (parseInt(uid) === userId) return;
         if (!cursor || cursor.anchor == null) return;
-        
+
         try {
           // Create a range at the remote cursor position without manipulating user's selection
           const range = document.createRange();
           const walker = document.createTreeWalker(dom, NodeFilter.SHOW_TEXT, null);
           let totalOffset = 0;
           let found = false;
-          
+
           while (walker.nextNode()) {
             const textNode = walker.currentNode as Text;
             const textLength = textNode.textContent?.length || 0;
-            
+
             if (totalOffset + textLength >= cursor.anchor) {
               // Found the text node containing the cursor
               const localOffset = Math.min(cursor.anchor - totalOffset, textLength);
@@ -868,17 +904,17 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
             }
             totalOffset += textLength;
           }
-          
+
           if (found) {
             // Get position using getBoundingClientRect - works without manipulating user's selection
             // Range is already collapsed (start === end) so getBoundingClientRect gives accurate caret position
             const rect = range.getBoundingClientRect();
             const parentRect = dom.getBoundingClientRect();
-            
+
             // Calculate position relative to container for cursor
             const containerLeft = rect.left - parentRect.left;
             const containerTop = rect.top - parentRect.top;
-            
+
             // Store viewport coordinates for fixed positioning tooltips
             const newPos = {
               left: containerLeft,
@@ -886,12 +922,12 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
               viewportLeft: rect.left,
               viewportTop: rect.top
             };
-            
+
             const existingPos = caretPositions[parseInt(uid)];
             // Only update if position changed significantly (more than 1px) to reduce flicker
-            if (!existingPos || 
-                Math.abs(existingPos.left - newPos.left) > 1 || 
-                Math.abs(existingPos.top - newPos.top) > 1) {
+            if (!existingPos ||
+              Math.abs(existingPos.left - newPos.left) > 1 ||
+              Math.abs(existingPos.top - newPos.top) > 1) {
               positions[parseInt(uid)] = newPos;
             } else {
               // Keep existing position to prevent unnecessary updates
@@ -902,20 +938,20 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
           console.error('Error calculating cursor position for user', uid, error);
         }
       });
-      
+
       setCaretPositions(positions);
     };
-    
+
     // Debounce position updates to prevent excessive recalculations
     let timeoutId: NodeJS.Timeout;
     const debouncedUpdate = () => {
       clearTimeout(timeoutId);
       timeoutId = setTimeout(updateCaretPositions, 100); // Increased debounce
     };
-    
+
     debouncedUpdate();
     window.addEventListener('resize', debouncedUpdate);
-    
+
     return () => {
       clearTimeout(timeoutId);
       window.removeEventListener('resize', debouncedUpdate);
@@ -926,10 +962,10 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
   useEffect(() => {
     const newPresenceState: PresenceState = {};
     const onlineUsersList: UserPresence[] = [];
-    
+
     Object.entries(remoteCursors).forEach(([uid, cursor]) => {
       if (parseInt(uid) === userId) return;
-      
+
       const userPresence: UserPresence = {
         userId: parseInt(uid),
         username: cursor.username || `User ${uid}`,
@@ -943,13 +979,13 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
         } : undefined,
         color: getColor(parseInt(uid))
       };
-      
+
       newPresenceState[parseInt(uid)] = userPresence;
       if (userPresence.status === 'online') {
         onlineUsersList.push(userPresence);
       }
     });
-    
+
     setPresenceState(newPresenceState);
     setOnlineUsers(onlineUsersList);
   }, [remoteCursors, userId]);
@@ -957,27 +993,27 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
   // Enhanced remote cursors overlay with better visual feedback
   const RemoteCursorsOverlay = () => {
     if (!editor) return null;
-    
-    
-    
+
+
+
     return (
       <>
         {Object.entries(remoteCursors).map(([uid, cursor]) => {
           if (parseInt(uid) === userId) return null;
           if (!cursor || cursor.anchor == null) return null;
-          
+
           const pos = caretPositions[parseInt(uid)];
           const userPresence = presenceState[parseInt(uid)];
-          
+
           if (!pos || !userPresence) {
             return null;
           }
-          
+
           const isOnline = userPresence.status === 'online';
           const isAway = userPresence.status === 'away';
-          
-          
-          
+
+
+
           return (
             <div
               key={uid}
@@ -998,7 +1034,7 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
                   transition: 'opacity 0.3s ease, left 0.1s ease, top 0.1s ease'
                 }}
               />
-              <div 
+              <div
                 className="remote-cursor-tooltip"
                 style={{
                   top: pos.viewportTop ? `${pos.viewportTop - 30}px` : `${pos.top - 30}px`,
@@ -1006,14 +1042,14 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <div 
-                    style={{ 
-                      width: 8, 
-                      height: 8, 
-                      borderRadius: '50%', 
+                  <div
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
                       background: isOnline ? '#4caf50' : isAway ? '#ff9800' : '#9e9e9e',
                       animation: isOnline ? 'pulse 2s infinite' : 'none'
-                    }} 
+                    }}
                   />
                   {userPresence.username}
                 </div>
@@ -1034,16 +1070,16 @@ function useRemoteCursors(editor: LexicalEditor | null, userId: number, remoteCu
 }
 
 // Enhanced collaboration plugin with robust presence management
-function CollaborationPlugin({ 
-  documentId, 
-  userId, 
+function CollaborationPlugin({
+  documentId,
+  userId,
   wsUrl,
   initialCrdtState,
   onSave,
   setRemoteCursors,
   user,
   setConnectionStatus,
-}: { 
+}: {
   documentId: number;
   userId: number;
   wsUrl: string;
@@ -1071,7 +1107,7 @@ function CollaborationPlugin({
   const colors = [
     '#e57373', '#64b5f6', '#81c784', '#ffd54f', '#ba68c8', '#4dd0e1', '#ff8a65', '#a1887f', '#90a4ae', '#f06292'
   ];
-  
+
   function getColor(uid: number) {
     return colors[uid % colors.length];
   }
@@ -1081,7 +1117,7 @@ function CollaborationPlugin({
     if (isConnectingRef.current || ws) return;
     isConnectingRef.current = true;
     setConnectionStatus('connecting');
-    
+
     const token = localStorage.getItem('access_token');
     if (!token) {
       setError('No authentication token found');
@@ -1089,17 +1125,17 @@ function CollaborationPlugin({
       setConnectionStatus('disconnected');
       return;
     }
-    
+
     const wsUrlWithToken = `${wsUrl}?token=${token}`;
     const socket = new WebSocket(wsUrlWithToken);
-    
+
     socket.onopen = () => {
       setConnected(true);
       setError(null);
       isConnectingRef.current = false;
       setConnectionStatus('connected');
-      
-      
+
+
       // Send initial presence data
       socket.send(JSON.stringify({
         type: 'presence_join',
@@ -1112,7 +1148,7 @@ function CollaborationPlugin({
           color: getColor(userId)
         }
       }));
-      
+
       // Start heartbeat
       heartbeatIntervalRef.current = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
@@ -1125,14 +1161,14 @@ function CollaborationPlugin({
         }
       }, 30000); // Send heartbeat every 30 seconds
     };
-    
+
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        
+
         // Update last activity
         lastActivityRef.current = Date.now();
-        
+
         if (data.type === 'init' || data.type === 'sync_response') {
           // Initial sync: set the editor content
           if (!initialSyncDoneRef.current) {
@@ -1166,7 +1202,7 @@ function CollaborationPlugin({
           }
         } else if (data.type === 'presence_join') {
           // Handle user joining
-          
+
           setRemoteCursors((prev) => ({
             ...prev,
             [data.user_id]: {
@@ -1180,7 +1216,7 @@ function CollaborationPlugin({
           }));
         } else if (data.type === 'presence_leave') {
           // Handle user leaving
-          
+
           setRemoteCursors((prev) => {
             const newState = { ...prev };
             delete newState[data.user_id];
@@ -1188,7 +1224,7 @@ function CollaborationPlugin({
           });
         } else if (data.type === 'presence_update') {
           // Handle presence updates
-          
+
           setRemoteCursors((prev) => ({
             ...prev,
             [data.user_id]: {
@@ -1202,36 +1238,36 @@ function CollaborationPlugin({
         console.error('Error processing message:', error);
       }
     };
-    
+
     socket.onclose = (event) => {
       setConnected(false);
       isConnectingRef.current = false;
       setWs(null);
       setConnectionStatus('disconnected');
-      
-      
+
+
       // Clear heartbeat
       if (heartbeatIntervalRef.current) {
         clearInterval(heartbeatIntervalRef.current);
       }
-      
+
       if (event.code !== 1000 && event.code !== 1001) {
         setError('Connection closed unexpectedly');
         setConnectionStatus('reconnecting');
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = setTimeout(() => { 
-          connectWebSocket(); 
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connectWebSocket();
         }, 5000);
       }
     };
-    
+
     socket.onerror = (error) => {
       setError('Connection error');
       isConnectingRef.current = false;
       setConnectionStatus('disconnected');
       console.error('WebSocket error:', error);
     };
-    
+
     setWs(socket);
   }, [ws, wsUrl, userId, documentId, editor, user, setRemoteCursors, setConnectionStatus]);
 
@@ -1248,18 +1284,18 @@ function CollaborationPlugin({
   // Enhanced content update detection with better debouncing
   useEffect(() => {
     if (!ws || !connected) return;
-    
+
     const removeUpdateListener = editor.registerUpdateListener(({ editorState }) => {
       if (suppressLocalChangeRef.current) return;
-      
+
       editorState.read(() => {
         const root = $getRoot();
         const newText = root.getTextContent();
         const oldText = lastTextRef.current;
-        
+
         if (newText !== oldText) {
-          
-          
+
+
           // Create character array for CRDT
           const characters = Array.from(newText).map((char, index) => ({
             value: char,
@@ -1270,14 +1306,14 @@ function CollaborationPlugin({
             },
             deleted: false
           }));
-          
+
           // Send update to WebSocket
           const updateContent = {
             text: newText,
             characters: characters,
             version: Date.now()
           };
-          
+
           try {
             ws.send(JSON.stringify({
               type: 'update',
@@ -1285,14 +1321,14 @@ function CollaborationPlugin({
               user_id: userId,
               document_id: documentId
             }));
-            
-            
+
+
             // Debounced save to database
             if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
             saveTimeoutRef.current = setTimeout(async () => {
               try {
                 await onSave(updateContent);
-                
+
               } catch (error) {
                 console.error('Error saving content:', error);
               }
@@ -1300,7 +1336,7 @@ function CollaborationPlugin({
           } catch (error) {
             console.error('Error sending update:', error);
           }
-          
+
           lastTextRef.current = newText;
         }
       });
@@ -1317,19 +1353,19 @@ function CollaborationPlugin({
   // Enhanced cursor position sending with better accuracy
   useEffect(() => {
     if (!ws || !connected) return;
-    
+
     const sendCursor = () => {
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
-      
+
       const range = selection.getRangeAt(0);
       const editorElement = editor.getRootElement();
       if (!editorElement) return;
-      
+
       // Calculate the offset within the content editable
       let offset = 0;
       const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null);
-      
+
       while (walker.nextNode()) {
         const textNode = walker.currentNode as Text;
         if (textNode === range.startContainer) {
@@ -1339,7 +1375,7 @@ function CollaborationPlugin({
           offset += textNode.textContent?.length || 0;
         }
       }
-      
+
       // Enhanced cursor data with more context
       const cursorData = {
         anchor: offset,
@@ -1350,8 +1386,8 @@ function CollaborationPlugin({
         color: getColor(userId),
         sessionId: sessionIdRef.current
       };
-      
-      
+
+
       ws.send(
         JSON.stringify({
           type: 'cursor',
@@ -1361,7 +1397,7 @@ function CollaborationPlugin({
         })
       );
     };
-    
+
     // Debounced cursor sending - increased debounce to prevent excessive updates
     let timeoutId: NodeJS.Timeout;
     let lastSentCursor: number | null = null;
@@ -1373,7 +1409,7 @@ function CollaborationPlugin({
         const range = selection.getRangeAt(0);
         const editorElement = editor.getRootElement();
         if (!editorElement) return;
-        
+
         // Calculate current cursor offset
         let offset = 0;
         const walker = document.createTreeWalker(editorElement, NodeFilter.SHOW_TEXT, null);
@@ -1386,24 +1422,24 @@ function CollaborationPlugin({
             offset += textNode.textContent?.length || 0;
           }
         }
-        
+
         // Only send if cursor position actually changed
         if (lastSentCursor === offset) return;
         lastSentCursor = offset;
         sendCursor();
       }, 150); // Increased debounce to reduce update frequency
     };
-    
+
     // Only listen for selection changes (NOT editor content updates)
     const handleSelectionChange = () => {
       debouncedSendCursor();
     };
-    
+
     document.addEventListener('selectionchange', handleSelectionChange);
-    
+
     // Send initial cursor position
     setTimeout(sendCursor, 100);
-    
+
     return () => {
       document.removeEventListener('selectionchange', handleSelectionChange);
       clearTimeout(timeoutId);
@@ -1416,7 +1452,7 @@ function CollaborationPlugin({
     const handleMessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
-        
+
         if (data.type === 'cursor' && data.user_id !== userId) {
           // Only update if cursor position actually changed to prevent unnecessary re-renders
           setRemoteCursors((prev) => {
@@ -1425,24 +1461,24 @@ function CollaborationPlugin({
               ...data.data,
               lastUpdated: Date.now()
             };
-            
+
             // Skip update if cursor position hasn't changed
-            if (existingCursor && 
-                existingCursor.anchor === newCursorData.anchor &&
-                existingCursor.focus === newCursorData.focus &&
-                Date.now() - existingCursor.lastUpdated < 100) {
+            if (existingCursor &&
+              existingCursor.anchor === newCursorData.anchor &&
+              existingCursor.focus === newCursorData.focus &&
+              Date.now() - existingCursor.lastUpdated < 100) {
               return prev; // Return previous state to prevent re-render
             }
-            
+
             return {
               ...prev,
               [data.user_id]: newCursorData
             };
           });
         }
-        
+
         if (data.type === 'user_joined') {
-          
+
           setRemoteCursors((prev) => ({
             ...prev,
             [data.user_id]: {
@@ -1453,24 +1489,24 @@ function CollaborationPlugin({
             }
           }));
         }
-        
+
         if (data.type === 'user_left') {
-          
+
           setRemoteCursors((prev) => {
             const newState = { ...prev };
             delete newState[data.user_id];
-            
+
             return newState;
           });
         }
-        
+
         if (data.type === 'init' && data.cursors) {
-          
+
           setRemoteCursors(data.cursors);
         }
-        
+
         if (data.type === 'user_disconnected' && data.user_id) {
-          
+
           setRemoteCursors((prev) => {
             const copy = { ...prev };
             delete copy[data.user_id];
@@ -1478,7 +1514,7 @@ function CollaborationPlugin({
             return copy;
           });
         }
-        
+
         if (data.type === 'presence_update') {
           console.log('Presence update:', data);
           // Handle presence updates (online/offline status)
@@ -1509,9 +1545,9 @@ function SavePlugin({ setEditor }: { setEditor: (editor: LexicalEditor) => void 
 }
 
 // Enhanced presence indicator component
-function PresenceIndicator({ onlineUsers, connectionStatus }: { 
-  onlineUsers: any[], 
-  connectionStatus: string 
+function PresenceIndicator({ onlineUsers, connectionStatus }: {
+  onlineUsers: any[],
+  connectionStatus: string
 }) {
   const getStatusColor = () => {
     switch (connectionStatus) {
@@ -1555,12 +1591,12 @@ function PresenceIndicator({ onlineUsers, connectionStatus }: {
 }
 
 // Grammar checking dialog component
-function GrammarCheckDialog({ 
-  open, 
-  onClose, 
-  grammarResult, 
-  onFixIssue 
-}: { 
+function GrammarCheckDialog({
+  open,
+  onClose,
+  grammarResult,
+  onFixIssue
+}: {
   open: boolean;
   onClose: () => void;
   grammarResult: GrammarResult | null;
@@ -1601,10 +1637,10 @@ function GrammarCheckDialog({
           <SpellcheckIcon />
           Grammar Check Results
           {grammarResult.summary.total_issues > 0 && (
-            <Chip 
-              label={grammarResult.summary.total_issues} 
-              color="error" 
-              size="small" 
+            <Chip
+              label={grammarResult.summary.total_issues}
+              color="error"
+              size="small"
             />
           )}
         </Box>
@@ -1627,10 +1663,10 @@ function GrammarCheckDialog({
                     primary={issue.message}
                     secondary={
                       <Box>
-                        <Chip 
-                          label={issue.rule_category} 
+                        <Chip
+                          label={issue.rule_category}
                           color={getCategoryColor(issue.rule_category) as any}
-                          size="small" 
+                          size="small"
                           sx={{ mr: 1 }}
                         />
                         <Typography variant="body2" color="text.secondary">
@@ -1652,8 +1688,8 @@ function GrammarCheckDialog({
                                   {replacement}
                                 </Button>
                               ))}
-      </Box>
-    </Box>
+                            </Box>
+                          </Box>
                         )}
                       </Box>
                     }
@@ -1754,21 +1790,21 @@ const DocumentEditor: React.FC = () => {
         const beforeText = textContent.substring(0, targetOffset);
         const afterText = textContent.substring(targetOffset + suggestion.length);
         const newText = beforeText + replacement + afterText;
-        
+
         targetNode.setTextContent(newText);
-        
+
         // Track this suggestion as applied to prevent re-suggesting (text only, no position)
         const suggestionKey = suggestion.text.toLowerCase().trim();
-        
+
         // Update AI state to remove the applied suggestion and track it
         setAIState(prev => {
           const newAppliedSuggestions = new Set(prev.appliedSuggestions);
           newAppliedSuggestions.add(suggestionKey);
-          
+
           return {
             ...prev,
             suggestions: prev.suggestions.filter(s => s !== suggestion),
-            grammarIssues: prev.grammarIssues.filter(issue => 
+            grammarIssues: prev.grammarIssues.filter(issue =>
               issue.offset !== suggestion.offset || issue.length !== suggestion.length
             ),
             appliedSuggestions: newAppliedSuggestions
@@ -1782,15 +1818,15 @@ const DocumentEditor: React.FC = () => {
   const handleDismissSuggestion = useCallback((suggestion: AISuggestion) => {
     // Track this suggestion as dismissed to prevent re-suggesting (text only, no position)
     const suggestionKey = suggestion.text.toLowerCase().trim();
-    
+
     setAIState(prev => {
       const newAppliedSuggestions = new Set(prev.appliedSuggestions);
       newAppliedSuggestions.add(suggestionKey); // Track dismissed suggestions too
-      
+
       return {
         ...prev,
         suggestions: prev.suggestions.filter(s => s !== suggestion),
-        grammarIssues: prev.grammarIssues.filter(issue => 
+        grammarIssues: prev.grammarIssues.filter(issue =>
           issue.offset !== suggestion.offset || issue.length !== suggestion.length
         ),
         appliedSuggestions: newAppliedSuggestions
@@ -1805,7 +1841,7 @@ const DocumentEditor: React.FC = () => {
     editor.getEditorState().read(() => {
       const root = $getRoot();
       const currentText = root.getTextContent();
-      
+
       setAIState(prev => {
         const validSuggestions = prev.suggestions.filter(suggestion => {
           // Check if the suggested text still exists at the specified offset
@@ -1822,13 +1858,13 @@ const DocumentEditor: React.FC = () => {
         if (validSuggestions.length !== prev.suggestions.length || validGrammarIssues.length !== prev.grammarIssues.length) {
           const removedCount = prev.suggestions.length - validSuggestions.length;
           console.log('Cleaned up invalid suggestions:', removedCount);
-          
+
           // Only show notification if explicitly requested (manual cleanup)
           if (showNotification && removedCount > 0) {
             setError(`Cleaned up ${removedCount} invalid suggestion${removedCount > 1 ? 's' : ''}`);
             setTimeout(() => setError(null), 3000);
           }
-          
+
           return {
             ...prev,
             suggestions: validSuggestions,
@@ -1846,7 +1882,7 @@ const DocumentEditor: React.FC = () => {
 
     try {
       setAIState(prev => ({ ...prev, isChecking: true, error: null }));
-      
+
       // Get current text from editor
       let currentText = '';
       editor.getEditorState().read(() => {
@@ -1855,20 +1891,20 @@ const DocumentEditor: React.FC = () => {
       });
 
       if (!currentText.trim() || currentText.length < 10) {
-        setAIState(prev => ({ 
-          ...prev, 
-          isChecking: false, 
-          error: 'Text must be at least 10 characters long for AI analysis' 
+        setAIState(prev => ({
+          ...prev,
+          isChecking: false,
+          error: 'Text must be at least 10 characters long for AI analysis'
         }));
         return;
       }
 
       // Get AI suggestions
       const result = await aiService.getSuggestions(currentText);
-      
+
       if (result.success && result.data) {
         const suggestions: AISuggestion[] = [];
-        
+
         // Process grammar issues
         if (result.data.grammar && Array.isArray(result.data.grammar.issues)) {
           result.data.grammar.issues.forEach((issue: any) => {
@@ -1878,23 +1914,23 @@ const DocumentEditor: React.FC = () => {
                 if (issueText.length > 0) {
                   // Create unique key for this suggestion (text only, no position)
                   const suggestionKey = issueText.toLowerCase().trim();
-                  
+
                   // Skip if already applied/dismissed
                   if (aiState.appliedSuggestions.has(suggestionKey)) {
                     return; // Skip this suggestion
                   }
-                  
+
                   // Better classification: check rule_category for spelling
                   const ruleCategory = (issue.rule_category || '').toLowerCase();
-                  const isSpelling = ruleCategory.includes('spelling') || 
-                                   ruleCategory.includes('typo') ||
-                                   (issue.rule_id || '').toLowerCase().includes('morfologik') ||
-                                   (issue.rule_id || '').toLowerCase().includes('speller');
-                  
+                  const isSpelling = ruleCategory.includes('spelling') ||
+                    ruleCategory.includes('typo') ||
+                    (issue.rule_id || '').toLowerCase().includes('morfologik') ||
+                    (issue.rule_id || '').toLowerCase().includes('speller');
+
                   // Helper function to rank replacements
                   const rankReplacements = (original: string, replacements: string[]): string[] => {
                     if (replacements.length === 0) return [];
-                    
+
                     const levenshtein = (a: string, b: string): number => {
                       const matrix: number[][] = [];
                       for (let i = 0; i <= b.length; i++) matrix[i] = [i];
@@ -1914,7 +1950,7 @@ const DocumentEditor: React.FC = () => {
                       }
                       return matrix[b.length][a.length];
                     };
-                    
+
                     const scored = replacements.map((replacement, index) => {
                       const distance = levenshtein(original.toLowerCase(), replacement.toLowerCase());
                       const lengthDiff = Math.abs(original.length - replacement.length);
@@ -1922,10 +1958,10 @@ const DocumentEditor: React.FC = () => {
                       const score = (index * 100) + (distance * 10) + lengthDiff + casePreserved;
                       return { replacement, score };
                     });
-                    
+
                     return scored.sort((a, b) => a.score - b.score).map(item => item.replacement);
                   };
-                  
+
                   suggestions.push({
                     type: isSpelling ? 'spelling' : 'grammar',
                     text: issueText,
@@ -2048,7 +2084,7 @@ const DocumentEditor: React.FC = () => {
       const timeoutId = setTimeout(() => {
         cleanupInvalidSuggestions();
       }, 200); // Slightly longer delay to avoid excessive cleanup
-      
+
       return () => clearTimeout(timeoutId);
     });
 
@@ -2157,22 +2193,22 @@ const DocumentEditor: React.FC = () => {
               </Typography>
             )}
             <PresenceIndicator onlineUsers={onlineUsers} connectionStatus={connectionStatus} />
-            
+
             {/* AI Status Indicator */}
             <Tooltip title={DISABLE_AI ? 'AI disabled' : 'Refresh AI status'}>
               <span>
-                <AIStatusIndicator 
-                  aiState={aiState} 
+                <AIStatusIndicator
+                  aiState={aiState}
                   onRefresh={checkAIHealth}
                 />
               </span>
             </Tooltip>
-            
+
             {/* AI Suggestions Button */}
             <Tooltip title={DISABLE_AI ? 'AI disabled' : 'AI Writing Suggestions'}>
               <span>
-                <IconButton 
-                  color="inherit" 
+                <IconButton
+                  color="inherit"
                   onClick={handleManualAICheck}
                   disabled={aiState.isChecking || DISABLE_AI}
                 >
@@ -2182,13 +2218,13 @@ const DocumentEditor: React.FC = () => {
                 </IconButton>
               </span>
             </Tooltip>
-            
+
             {/* Cleanup Invalid Suggestions Button */}
             {aiState.suggestions.length > 0 && (
               <Tooltip title={DISABLE_AI ? 'AI disabled' : 'Clean up invalid suggestions'}>
                 <span>
-                  <IconButton 
-                    color="inherit" 
+                  <IconButton
+                    color="inherit"
                     onClick={() => cleanupInvalidSuggestions(true)}
                     size="small"
                     disabled={DISABLE_AI}
@@ -2198,7 +2234,7 @@ const DocumentEditor: React.FC = () => {
                 </span>
               </Tooltip>
             )}
-            
+
             <IconButton color="inherit">
               <PersonIcon />
             </IconButton>
@@ -2221,21 +2257,21 @@ const DocumentEditor: React.FC = () => {
               <LinkPlugin />
               <ListPlugin />
               <MarkdownShortcutPlugin transformers={TRANSFORMERS} />
-              
+
               {/* AI Integration Plugin */}
               <AIIntegrationPlugin
                 onAIStateChange={updateAIState}
                 aiState={aiState}
                 enabled={!DISABLE_AI}
               />
-              
+
               {/* Inline AI Suggestions */}
               <InlineAISuggestions
                 suggestions={aiState.suggestions}
                 onApplySuggestion={handleApplySuggestion}
                 onDismissSuggestion={handleDismissSuggestion}
               />
-              
+
               {document && (
                 <CollaborationPlugin
                   documentId={parseInt(id!)}
@@ -2253,7 +2289,7 @@ const DocumentEditor: React.FC = () => {
           </LexicalComposer>
         </Paper>
       </Box>
-      
+
       {/* AI Suggestions Dialog */}
       <AISuggestionsDialog
         open={aiDialogOpen}
@@ -2269,9 +2305,9 @@ const DocumentEditor: React.FC = () => {
         autoHideDuration={6000}
         onClose={() => updateAIState({ error: null })}
       >
-        <Alert 
-          onClose={() => updateAIState({ error: null })} 
-          severity="error" 
+        <Alert
+          onClose={() => updateAIState({ error: null })}
+          severity="error"
           sx={{ width: '100%' }}
         >
           {aiState.error}
