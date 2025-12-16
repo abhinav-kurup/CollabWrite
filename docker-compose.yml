@@ -9,26 +9,39 @@ services:
       - "8000:8000"
     volumes:
       - ./app/backend:/app
+      - hf_cache:/app/hf_cache
     environment:
-      - POSTGRES_SERVER=db
+      # Local Postgres (running on host machine)
+      - POSTGRES_SERVER=host.docker.internal
+      - SECRET_KEY=your-secret-key-here
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=12345
       - POSTGRES_DB=collabwrite
-      - LANGUAGETOOL_URL=http://languagetool:8010
-    depends_on:
-      - db
-      - languagetool
 
-  db:
-    image: postgres:15
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=collabwrite
+      # AI services
+      - AI_LANGUAGE_TOOL_URL=http://languagetool:8010
+      - HF_HOME=/app/hf_cache
+    depends_on:
+      languagetool:
+        condition: service_healthy
+    restart: always
+
+  frontend:
+    build:
+      context: ./app/frontend
+      dockerfile: Dockerfile
     ports:
-      - "5432:5432"
+      - "3000:3000"
+    volumes:
+      - ./app/frontend:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    depends_on:
+      - backend
+    stdin_open: true
+    tty: true
 
   languagetool:
     image: silviof/docker-languagetool:6.3
@@ -39,7 +52,13 @@ services:
     volumes:
       - languagetool_data:/languagetool
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/v2/languages"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
-  postgres_data:
-  languagetool_data: 
+  languagetool_data:
+  hf_cache:
